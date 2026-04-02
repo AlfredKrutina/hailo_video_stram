@@ -15,7 +15,8 @@ class Base(DeclarativeBase):
 
 
 class RecordingPolicyRow(Base):
-    __tablename__ = "recording_policy"
+    # Nepoužívat jen "recording_policy" — na PG může kolidovat s typy po neúspěšném DDL
+    __tablename__ = "rpy_recording_policy"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     data: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

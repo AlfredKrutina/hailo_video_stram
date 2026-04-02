@@ -40,6 +40,7 @@ def init_db() -> bool:
     return True
 
 
+@contextmanager
 def session_scope() -> Generator[Session, None, None]:
     if _SessionLocal is None:
         raise RuntimeError("database not initialized")
