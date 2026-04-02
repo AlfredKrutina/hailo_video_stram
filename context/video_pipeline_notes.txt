@@ -21,11 +21,11 @@ Z Dockeru často nefunguje RTSP přes UDP (NAT/firewall) — v ai_core se rtspsr
 (RPY_RTSP_FORCE_TCP, výchozí 1) a latence RPY_RTSP_LATENCY_MS. Pokud kamera vyžaduje výhradně UDP,
 nastav RPY_RTSP_FORCE_TCP=0. Alternativa: RPY_RTSP_USE_URIDECODEBIN=1 (jiná cesta decode).
 
-YouTube (yt-dlp -o - → fdsrc → decodebin): typická chyba „Stream doesn't contain enough data“ vzniká,
-když výstup není souvislý progressive stream nebo když je před decode příliš malá fronta. V kódu je
-preferovaný formát s mp4, fronta omezená (RPY_YTDLP_QUEUE_MB, výchozí 12) — větší hodnoty na Pi
-mohou OOM → pád ai_core → Nginx 502 na /mjpeg/. decodebin3 je volitelný (RPY_USE_DECODEBIN3).
-Pro YouTube se přidává player_client=android.
+YouTube: výchozí je řetězec yt-dlp → ffmpeg (MPEG-TS) → fdsrc → decodebin (RPY_YTDLP_FFMPEG_TS=1).
+MPEG-TS má pro GStreamer čitelné sync byty — mizí častá chyba typefind „Stream doesn't contain enough data“
+u surového stdout z yt-dlp (fragmentovaný MP4/WebM). Vypnout remux: RPY_YTDLP_FFMPEG_TS=0.
+Fronta: RPY_YTDLP_QUEUE_MB. Pro YouTube: player_client=android u yt-dlp.
+Staging: stderr z yt-dlp do logu a do diagnostics (ytdlp_stderr_tail) — RPY_YTDLP_LOG_STDERR=0 vypne i ve staging.
 
 Prostředí (Docker vs lokálně)
 -----------------------------

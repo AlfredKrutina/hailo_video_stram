@@ -26,6 +26,7 @@ COPY pyproject.toml /app/
 COPY shared /app/shared
 COPY services /app/services
 COPY config /app/config
+COPY scripts /app/scripts
 
 RUN pip install --no-cache-dir --break-system-packages -e .
 

@@ -1,0 +1,18 @@
+Výsledky ručního ověření streamů (YouTube + RTSP)
+================================================
+
+Stav na vývojovém hostiteli (Cursor/Windows, 2026-04-02):
+- Docker Desktop neběžel (npipe k daemonu nedostupný) — příkazy yt-dlp / ffprobe nebyly spuštěny v kontejneru.
+- Na PATH nebyly yt-dlp ani ffprobe — lokální ověření bez Dockeru neproveditelné.
+
+Postup na cíli (Raspberry Pi / Linux, Docker compose v adresáři docker/):
+1. docker compose up -d --build ai_core
+2. docker compose exec ai_core sh /app/scripts/verify_stream_sources.sh
+3. Pro RTSP (citlivé údaje necommitovat):
+   docker compose exec -e RTSP_TEST_URI='rtsp://...' ai_core sh /app/scripts/verify_stream_sources.sh
+
+Skript je v image (COPY scripts v docker/Dockerfile.ai).
+
+Env diagnostika yt-dlp stderr v aplikaci:
+- Výchozí staging (ENVIRONMENT=staging): zapnuto logování stderr yt-dlp (RPY_YTDLP_LOG_STDERR lze vynutit vypnutí =0).
+- Telemetrie/diagnostics: pole ytdlp_stderr_tail (poslední řádky), pokud je logování zapnuto.

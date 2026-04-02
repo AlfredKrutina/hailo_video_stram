@@ -169,6 +169,19 @@ def _configure_rtspsrc_if_needed(element: Any) -> None:
         )
 
 
+def _ytdlp_stderr_to_log() -> bool:
+    """
+    Staging: logovat řádky stderr z yt-dlp (lepší diagnostika než DEVNULL).
+    Vypnuto: RPY_YTDLP_LOG_STDERR=0. Zapnuto i v produkci: RPY_YTDLP_LOG_STDERR=1.
+    """
+    ex = os.environ.get("RPY_YTDLP_LOG_STDERR", "").strip().lower()
+    if ex in ("0", "false", "no"):
+        return False
+    if ex in ("1", "true", "yes"):
+        return True
+    return os.environ.get("ENVIRONMENT", "").lower() == "staging"
+
+
 class GstVisionPipeline:
     def __init__(
         self,
@@ -200,10 +213,16 @@ class GstVisionPipeline:
         self._last_gst_error: str | None = None
         self._recovery_cycles = 0
         self._ingress_mode: str | None = None
+        self._ffmpeg_remux_proc: subprocess.Popen | None = None
         self._ytdlp_proc: subprocess.Popen | None = None
+        self._ytdlp_stderr_thread: threading.Thread | None = None
+        self._ytdlp_stderr_tail: deque[str] = deque(maxlen=120)
         self._forbidden_streak: int = 0
 
     def get_diagnostics(self) -> dict[str, Any]:
+        extra: dict[str, Any] = {}
+        if _ytdlp_stderr_to_log() and self._ytdlp_stderr_tail:
+            extra["ytdlp_stderr_tail"] = list(self._ytdlp_stderr_tail)[-30:]
         return {
             "configured_uri": sanitize_uri(self._cfg.source.uri),
             "playback_uri": sanitize_uri(self._last_playback_uri or self._cfg.source.uri),
@@ -213,6 +232,7 @@ class GstVisionPipeline:
             "ingress_mode": self._ingress_mode,
             # legacy key for older UIs
             "rtsp_mode": self._ingress_mode,
+            **extra,
         }
 
     def _create_vsink_bin(self) -> tuple[Any, Any, Any]:
@@ -286,19 +306,54 @@ class GstVisionPipeline:
 
         return vsink_bin, asink, jsink
 
-    def _kill_ytdlp_child(self) -> None:
-        if self._ytdlp_proc is None:
+    def _drain_ytdlp_stderr(self, proc: subprocess.Popen) -> None:
+        err = proc.stderr
+        if err is None:
             return
-        proc = self._ytdlp_proc
-        self._ytdlp_proc = None
         try:
-            proc.terminate()
-            proc.wait(timeout=3.0)
-        except Exception:
+            for line in iter(err.readline, b""):
+                if not line:
+                    if proc.poll() is not None:
+                        break
+                    continue
+                text = line.decode("utf-8", errors="replace").rstrip("\n\r")
+                if not text:
+                    continue
+                self._ytdlp_stderr_tail.append(text)
+                if _ytdlp_stderr_to_log():
+                    logger.info(
+                        "ytdlp_stderr",
+                        extra={"extra_data": {"line": text[:2000]}},
+                    )
+        except Exception as e:
+            logger.debug("ytdlp_stderr_reader_exc", extra={"extra_data": {"err": str(e)}})
+        finally:
             try:
-                proc.kill()
+                err.close()
             except Exception:
                 pass
+
+    def _kill_ytdlp_child(self) -> None:
+        """Nejdřív ffmpeg (čte z yt-dlp), pak yt-dlp — uvolní se pipe."""
+        thr = self._ytdlp_stderr_thread
+        self._ytdlp_stderr_thread = None
+        ff = self._ffmpeg_remux_proc
+        yp = self._ytdlp_proc
+        self._ffmpeg_remux_proc = None
+        self._ytdlp_proc = None
+        for proc in (ff, yp):
+            if proc is None:
+                continue
+            try:
+                proc.terminate()
+                proc.wait(timeout=3.0)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        if thr is not None and thr.is_alive():
+            thr.join(timeout=2.0)
 
     @staticmethod
     def _is_forbidden_http_error(text: str) -> bool:
@@ -431,18 +486,96 @@ class GstVisionPipeline:
                 # Web klient často vrací fragmentované streamy špatně čitelné z pipe bez obřího bufferu.
                 cmd.extend(["--extractor-args", "youtube:player_client=android"])
             cmd.append(page)
+            self._ytdlp_stderr_tail.clear()
+            stderr_dest = subprocess.PIPE if _ytdlp_stderr_to_log() else subprocess.DEVNULL
+            use_ffmpeg_ts = os.environ.get("RPY_YTDLP_FFMPEG_TS", "1").lower() not in (
+                "0",
+                "false",
+                "no",
+            )
+            ffmpeg_bin = shutil.which("ffmpeg") if use_ffmpeg_ts else None
             try:
-                self._ytdlp_proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    bufsize=0,
-                )
+                if ffmpeg_bin:
+                    yp = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=stderr_dest,
+                        bufsize=0,
+                    )
+                    assert yp.stdout is not None
+                    if stderr_dest == subprocess.PIPE and yp.stderr is not None:
+                        self._ytdlp_stderr_thread = threading.Thread(
+                            target=self._drain_ytdlp_stderr,
+                            args=(yp,),
+                            daemon=True,
+                            name="ytdlp-stderr",
+                        )
+                        self._ytdlp_stderr_thread.start()
+                    ff_cmd = [
+                        ffmpeg_bin,
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-fflags",
+                        "+genpts+discardcorrupt",
+                        "-probesize",
+                        "32M",
+                        "-analyzeduration",
+                        "30M",
+                        "-i",
+                        "-",
+                        "-map",
+                        "0:v:0",
+                        "-c",
+                        "copy",
+                        "-f",
+                        "mpegts",
+                        "-",
+                    ]
+                    try:
+                        ffp = subprocess.Popen(
+                            ff_cmd,
+                            stdin=yp.stdout,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL,
+                            bufsize=0,
+                        )
+                    except OSError:
+                        yp.terminate()
+                        try:
+                            yp.wait(timeout=2.0)
+                        except Exception:
+                            try:
+                                yp.kill()
+                            except Exception:
+                                pass
+                        raise
+                    yp.stdout.close()
+                    self._ytdlp_proc = yp
+                    self._ffmpeg_remux_proc = ffp
+                    assert ffp.stdout is not None
+                    fd = ffp.stdout.fileno()
+                else:
+                    self._ffmpeg_remux_proc = None
+                    self._ytdlp_proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=stderr_dest,
+                        bufsize=0,
+                    )
+                    assert self._ytdlp_proc.stdout is not None
+                    if stderr_dest == subprocess.PIPE and self._ytdlp_proc.stderr is not None:
+                        self._ytdlp_stderr_thread = threading.Thread(
+                            target=self._drain_ytdlp_stderr,
+                            args=(self._ytdlp_proc,),
+                            daemon=True,
+                            name="ytdlp-stderr",
+                        )
+                        self._ytdlp_stderr_thread.start()
+                    fd = self._ytdlp_proc.stdout.fileno()
             except OSError as e:
-                self._on_state(PipelineState.FAILED, f"yt-dlp nelze spustit: {e}")
+                self._on_state(PipelineState.FAILED, f"yt-dlp/ffmpeg nelze spustit: {e}")
                 return
-            assert self._ytdlp_proc.stdout is not None
-            fd = self._ytdlp_proc.stdout.fileno()
             fdsrc = Gst.ElementFactory.make("fdsrc", "fdsrc")
             q0 = Gst.ElementFactory.make("queue", "qpipe")
             # Buffer před decode — typefind potřebuje souvislý úvod MP4; příliš velké hodnoty
@@ -487,7 +620,7 @@ class GstVisionPipeline:
             bin_sink = vsink_bin.get_static_pad("sink")
             _linked: dict[str, bool] = {"done": False}
             self._connect_decodebin_video(decode, bin_sink, _linked)
-            self._ingress_mode = "ytdlp_pipe"
+            self._ingress_mode = "ytdlp_pipe_ffmpeg_ts" if ffmpeg_bin else "ytdlp_pipe"
             logger.info(
                 "ingress_ytdlp_pipe",
                 extra={
@@ -495,6 +628,7 @@ class GstVisionPipeline:
                         "page": sanitize_uri(page),
                         "format": fmt,
                         "decode": (decode.get_factory().get_name() or "decodebin"),
+                        "remux": "mpegts_via_ffmpeg" if ffmpeg_bin else "raw_ytdlp_stdout",
                     },
                 },
             )
@@ -653,6 +787,11 @@ class GstVisionPipeline:
             # endregion
             self._last_gst_error = str(err)
             logger.error("gst_error", extra={"extra_data": {"err": str(err), "dbg": dbg}})
+            if self._ingress_mode == "ytdlp_pipe" and self._ytdlp_stderr_tail:
+                logger.error(
+                    "gst_error_ytdlp_stderr_tail",
+                    extra={"extra_data": {"tail": list(self._ytdlp_stderr_tail)[-20:]}},
+                )
             self._controller.transition(PipelineState.PAUSED)
             detail = f"{err}" + (f" | {dbg}" if dbg else "")
             if self._is_forbidden_http_error(detail):
