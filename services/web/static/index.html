@@ -52,9 +52,15 @@
       </div>
       <div class="diag-strip" id="pipelineDiagnostics" hidden></div>
       <div class="telemetry">
-        <canvas id="chLat" height="80" aria-label="Latence inference"></canvas>
-        <canvas id="chFps" height="80" aria-label="FPS"></canvas>
-        <canvas id="chTemp" height="80" aria-label="Teploty"></canvas>
+        <div class="telemetry-chart" aria-label="Latence inference">
+          <canvas id="chLat"></canvas>
+        </div>
+        <div class="telemetry-chart" aria-label="FPS">
+          <canvas id="chFps"></canvas>
+        </div>
+        <div class="telemetry-chart telemetry-chart--legend" aria-label="Teploty">
+          <canvas id="chTemp"></canvas>
+        </div>
       </div>
       <div class="metrics mono" id="metrics"></div>
       <div class="events">
@@ -63,6 +69,6 @@
       </div>
     </main>
   </div>
-  <script src="/assets/app.js?v=5" defer></script>
+  <script src="/assets/app.js?v=8" defer></script>
 </body>
 </html>

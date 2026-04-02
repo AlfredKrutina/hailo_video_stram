@@ -16,7 +16,9 @@ RUN mkdir -p /opt/rpy/assets \
        || curl -fsSL --retry 3 -L -o /opt/rpy/assets/sample.mp4 \
            "https://filesamples.com/samples/video/mp4/sample_640x360.mp4" \
        || curl -fsSL --retry 3 -L -o /opt/rpy/assets/sample.mp4 \
-           "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4" )
+           "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4" ) \
+    && test "$(wc -c < /opt/rpy/assets/sample.mp4)" -ge 4096 \
+    && ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 /opt/rpy/assets/sample.mp4 | grep -q .
 
 WORKDIR /app
 

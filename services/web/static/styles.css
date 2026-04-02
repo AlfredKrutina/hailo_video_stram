@@ -335,15 +335,31 @@ button:hover {
 
 .telemetry {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+  align-items: stretch;
 }
 
-.telemetry canvas {
-  width: 100% !important;
+/* Pevná výška boxu — Chart.js (maintainAspectRatio: false) vyplní vnitřek bez roztahování přes celou šířku okna. */
+.telemetry-chart {
+  position: relative;
+  min-width: 0;
+  height: 118px;
+  padding: 0.35rem 0.45rem;
   background: var(--panel);
   border-radius: 8px;
   border: 1px solid var(--border);
+}
+
+.telemetry-chart--legend {
+  height: 132px;
+}
+
+.telemetry-chart canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  max-height: 100%;
 }
 
 .metrics {

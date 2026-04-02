@@ -10,6 +10,7 @@ Contract:
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import queue
 from typing import TYPE_CHECKING
@@ -22,6 +23,11 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger("ai_core.mjpeg")
+
+# 1×1 JPEG — při dlouhé prodlevě bez snímku z pipeline pošleme placeholder (prohlížeč nedostane „visící“ chunked stream).
+_PLACEHOLDER_JPEG = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAG/AP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAQUCf//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQMBAT8Bf//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQIBAT8Bf//Z"
+)
 
 
 def create_mjpeg_app(q: queue.Queue[bytes | None]) -> web.Application:
@@ -46,11 +52,19 @@ def create_mjpeg_app(q: queue.Queue[bytes | None]) -> web.Application:
             except queue.Empty:
                 return None
 
+        empty_s = 0
+        placeholder_after_s = 5
+
         try:
             while True:
                 chunk = await loop.run_in_executor(None, _get_chunk)
                 if chunk is None:
+                    empty_s += 1
+                    if empty_s >= placeholder_after_s:
+                        empty_s = 0
+                        await resp.write(boundary + _PLACEHOLDER_JPEG + b"\r\n")
                     continue
+                empty_s = 0
                 await resp.write(boundary + chunk + b"\r\n")
         except asyncio.CancelledError:
             raise

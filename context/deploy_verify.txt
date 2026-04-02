@@ -1,3 +1,6 @@
+Důležité: UI otevírat přes Nginx :80, ne přímo :8080 (web) — jinak /mjpeg/ není u FastAPI a obraz není.
+Viz context/video_pipeline_notes.txt
+
 Nasazení po změnách (Pi nebo dev):
   cd <repo>
   git pull
@@ -15,3 +18,9 @@ Tvrdý refresh prohlížeče (Ctrl+F5) kvůli cache statiky.
 Vlastní MP4 mimo image: v docker-compose u ai_core odkomentujte řádek
   ../samples:/data/samples:ro
 a vložte soubory do projektu ./samples/ na hostu.
+
+YouTube / Vimeo / …: ingest jde přes yt-dlp stdout → fdsrc (ne přímý googlevideo URL).
+RTSP: volitelně RPY_RTSP_USE_URIDECODEBIN=1 pro uridecodebin místo playbin.
+
+Ověření sample v image po buildu:
+  docker compose exec ai_core ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 /opt/rpy/assets/sample.mp4

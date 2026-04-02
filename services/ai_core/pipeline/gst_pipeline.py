@@ -1,21 +1,22 @@
 """
 GStreamer ingest for vision pipeline.
 
-Two ingress modes:
-- **RTSP** — `playbin` with video-only flags (avoids decodebin failing on obscure audio codecs; see NVR/VLC warnings).
-- **Other URIs** — `uridecodebin` (HTTP file, YouTube-resolved URL, local file).
-  Pro HTTPS z `yt-dlp` (googlevideo.com) je potřeba nastavit na `souphttpsrc` User-Agent a Referer,
-  jinak CDN vrací 403 — viz `_apply_browser_like_headers`.
+Ingress modes:
+- **RTSP** — `playbin` video-only (optional `uridecodebin` via env).
+- **Direct URI** — `uridecodebin` (file, http mp4, RTSP when forced).
+- **Portal (YouTube, …)** — `yt-dlp -o -` → `fdsrc` → `decodebin` (avoids googlevideo + souphttpsrc 403).
 
-Downstream: fixed RGB size → tee → appsink (numpy inference) + jpegenc → MJPEG queue.
+Downstream: fixed RGB → tee → appsink + jpegenc.
 
-Errors on the bus trigger recovery with backoff; see `shared.errors.ErrorCode.GST_PIPELINE_ERROR` for log correlation.
+Errors trigger recovery with backoff; repeated HTTP 403 stops recovery (FAILED).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import shutil
+import subprocess
 import threading
 import time
 from collections import deque
@@ -26,7 +27,7 @@ import numpy as np
 from shared.schemas.config import AppConfig, ModelConfig
 from shared.schemas.telemetry import PipelineState
 
-from services.ai_core.source_resolve import resolve_playback_uri, sanitize_uri
+from services.ai_core.source_resolve import resolve_playback, sanitize_uri
 from services.ai_core.pipeline.rtsp_probe import rtsp_describe_ok
 from services.ai_core.pipeline.state import PipelineController
 
@@ -132,7 +133,9 @@ class GstVisionPipeline:
         self._last_resolution_error: str | None = None
         self._last_gst_error: str | None = None
         self._recovery_cycles = 0
-        self._rtsp_mode: str | None = None
+        self._ingress_mode: str | None = None
+        self._ytdlp_proc: subprocess.Popen | None = None
+        self._forbidden_streak: int = 0
 
     def get_diagnostics(self) -> dict[str, Any]:
         return {
@@ -141,7 +144,9 @@ class GstVisionPipeline:
             "resolution_error": self._last_resolution_error,
             "last_gst_error": self._last_gst_error,
             "recovery_cycles": self._recovery_cycles,
-            "rtsp_mode": self._rtsp_mode,
+            "ingress_mode": self._ingress_mode,
+            # legacy key for older UIs
+            "rtsp_mode": self._ingress_mode,
         }
 
     def _create_vsink_bin(self) -> tuple[Any, Any, Any]:
@@ -210,6 +215,60 @@ class GstVisionPipeline:
 
         return vsink_bin, asink, jsink
 
+    def _kill_ytdlp_child(self) -> None:
+        if self._ytdlp_proc is None:
+            return
+        proc = self._ytdlp_proc
+        self._ytdlp_proc = None
+        try:
+            proc.terminate()
+            proc.wait(timeout=3.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _is_forbidden_http_error(text: str) -> bool:
+        t = text.lower()
+        return "403" in t or "forbidden" in t
+
+    def _connect_decodebin_video(
+        self,
+        decode: Any,
+        bin_sink: Any,
+        linked_flag: dict[str, bool],
+    ) -> None:
+        """Link first video/x-* pad from decodebin/uridecodebin to vsink_bin (handles late caps)."""
+        assert Gst is not None
+
+        def try_link_pad(pad: Any) -> None:
+            if linked_flag.get("done") or bin_sink is None:
+                return
+            caps = pad.get_current_caps()
+            if caps is None:
+                return
+            struct = caps.get_structure(0)
+            name = struct.get_name() if struct else ""
+            if not name.startswith("video"):
+                return
+            ret = pad.link(bin_sink)
+            if ret == Gst.PadLinkReturn.OK:
+                linked_flag["done"] = True
+
+        def on_pad_added(_el: Any, pad: Any) -> None:
+            if pad.get_direction() != Gst.PadDirection.SRC:
+                return
+            try_link_pad(pad)
+            if not linked_flag.get("done"):
+                pad.connect(
+                    "notify::caps",
+                    lambda p, _pspec: try_link_pad(p),
+                )
+
+        decode.connect("pad-added", on_pad_added)
+
     def _wire_decode_bus_and_play(
         self,
         asink: Any,
@@ -241,17 +300,25 @@ class GstVisionPipeline:
 
     def _build_and_run(self) -> None:
         assert Gst is not None
-        resolved, rerr = resolve_playback_uri(self._cfg.source.uri)
+        self._kill_ytdlp_child()
+
+        spec, rerr = resolve_playback(self._cfg.source.uri)
         self._last_resolution_error = rerr
-        self._last_playback_uri = resolved if not rerr else None
-        self._rtsp_mode = None
-        if rerr:
+        if spec and spec.kind == "direct":
+            self._last_playback_uri = spec.uri
+        elif spec and spec.kind == "ytdlp_pipe":
+            self._last_playback_uri = spec.ytdlp_page_url
+        else:
+            self._last_playback_uri = None
+
+        self._ingress_mode = None
+        if rerr or not spec:
             logger.error(
                 "playback_resolve_failed",
                 extra={"extra_data": {"err": rerr, "uri": sanitize_uri(self._cfg.source.uri)}},
             )
             self._last_gst_error = None
-            self._on_state(PipelineState.RECOVERING, rerr)
+            self._on_state(PipelineState.RECOVERING, rerr or "Neznámý zdroj")
             self._start_recovery(f"resolve:{rerr}")
             return
 
@@ -262,6 +329,65 @@ class GstVisionPipeline:
             self._on_state(PipelineState.FAILED, str(e))
             return
 
+        if spec.kind == "ytdlp_pipe":
+            page = (spec.ytdlp_page_url or "").strip()
+            ytdlp = shutil.which("yt-dlp")
+            if not ytdlp or not page:
+                self._on_state(PipelineState.FAILED, "yt-dlp nebo URL chybí")
+                return
+            cmd = [
+                ytdlp,
+                "-f",
+                "best[height<=720]/best[height<=1080]/best/worst",
+                "-o",
+                "-",
+                "--no-playlist",
+                "--no-warnings",
+                page,
+            ]
+            try:
+                self._ytdlp_proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=0,
+                )
+            except OSError as e:
+                self._on_state(PipelineState.FAILED, f"yt-dlp nelze spustit: {e}")
+                return
+            assert self._ytdlp_proc.stdout is not None
+            fd = self._ytdlp_proc.stdout.fileno()
+            fdsrc = Gst.ElementFactory.make("fdsrc", "fdsrc")
+            q0 = Gst.ElementFactory.make("queue", "qpipe")
+            q0.set_property("max-size-buffers", 16)
+            q0.set_property("max-size-time", 2 * 10**9)
+            decode = Gst.ElementFactory.make("decodebin", "decode")
+            if fdsrc is None or q0 is None or decode is None:
+                self._on_state(PipelineState.FAILED, "fdsrc/decodebin missing")
+                self._kill_ytdlp_child()
+                return
+            fdsrc.set_property("fd", fd)
+            try:
+                fdsrc.set_property("is-live", True)
+            except Exception:
+                pass
+            self._pipeline.add(fdsrc)
+            self._pipeline.add(q0)
+            self._pipeline.add(decode)
+            self._pipeline.add(vsink_bin)
+            if not fdsrc.link(q0) or not q0.link(decode):
+                self._on_state(PipelineState.FAILED, "fdsrc → decodebin link selhal")
+                self._kill_ytdlp_child()
+                return
+            bin_sink = vsink_bin.get_static_pad("sink")
+            _linked: dict[str, bool] = {"done": False}
+            self._connect_decodebin_video(decode, bin_sink, _linked)
+            self._ingress_mode = "ytdlp_pipe"
+            logger.info("ingress_ytdlp_pipe", extra={"extra_data": {"page": sanitize_uri(page)}})
+            self._wire_decode_bus_and_play(asink, jsink)
+            return
+
+        resolved = spec.uri or ""
         use_rtsp_playbin = (
             resolved.lower().startswith("rtsp://")
             and _rtsp_use_playbin_video_only()
@@ -277,12 +403,12 @@ class GstVisionPipeline:
             playbin.set_property("video-sink", vsink_bin)
             self._pipeline.add(playbin)
             self._pipeline.add(vsink_bin)
-            self._rtsp_mode = "playbin_video_only"
+            self._ingress_mode = "playbin_video_only"
             logger.info(
                 "rtsp_pipeline",
                 extra={
                     "extra_data": {
-                        "mode": self._rtsp_mode,
+                        "mode": self._ingress_mode,
                         "hint": "bez audio stopy — kamery často posílají kodek, který decodebin nezvládne",
                     },
                 },
@@ -296,28 +422,15 @@ class GstVisionPipeline:
             decode.connect("source-setup", lambda _bin, src: _apply_browser_like_headers(src))
             self._pipeline.add(decode)
             self._pipeline.add(vsink_bin)
-            self._rtsp_mode = (
+            self._ingress_mode = (
                 "uridecodebin_forced"
                 if resolved.lower().startswith("rtsp://")
                 else "uridecodebin"
             )
 
             bin_sink = vsink_bin.get_static_pad("sink")
-            _linked = {"done": False}
-
-            def on_pad_added(_dbin: Any, pad: Any) -> None:
-                if _linked["done"] or bin_sink is None:
-                    return
-                caps_p = pad.get_current_caps()
-                struct = caps_p.get_structure() if caps_p else None
-                name = struct.get_name() if struct else ""
-                if not name.startswith("video"):
-                    return
-                if not pad.is_linked():
-                    pad.link(bin_sink)
-                    _linked["done"] = True
-
-            decode.connect("pad-added", on_pad_added)
+            _linked: dict[str, bool] = {"done": False}
+            self._connect_decodebin_video(decode, bin_sink, _linked)
 
         self._wire_decode_bus_and_play(asink, jsink)
 
@@ -330,15 +443,35 @@ class GstVisionPipeline:
             logger.error("gst_error", extra={"extra_data": {"err": str(err), "dbg": dbg}})
             self._controller.transition(PipelineState.PAUSED)
             detail = f"{err}" + (f" | {dbg}" if dbg else "")
+            if self._is_forbidden_http_error(detail):
+                self._forbidden_streak += 1
+            else:
+                self._forbidden_streak = 0
+
+            if self._forbidden_streak >= 5:
+                fail_msg = (
+                    "Opakovaný HTTP 403 / Forbidden — použijte Demo soubor v image, přímý HTTP MP4 nebo RTSP. "
+                    "YouTube přes yt-dlp pipe může stále blokovat CDN."
+                )
+                self._on_state(PipelineState.FAILED, fail_msg[:1200])
+                if self._pipeline:
+                    self._pipeline.set_state(Gst.State.NULL)
+                self._kill_ytdlp_child()
+                return
+
             self._on_state(PipelineState.RECOVERING, detail[:1200])
-            self._pipeline.set_state(Gst.State.NULL)
+            if self._pipeline:
+                self._pipeline.set_state(Gst.State.NULL)
+            self._kill_ytdlp_child()
             self._start_recovery(str(err))
         elif t == Gst.MessageType.EOS:
             logger.warning("gst_eos")
             self._last_gst_error = "EOS (konec streamu nebo odpojení)"
             self._controller.transition(PipelineState.PAUSED)
             self._on_state(PipelineState.RECOVERING, self._last_gst_error)
-            self._pipeline.set_state(Gst.State.NULL)
+            if self._pipeline:
+                self._pipeline.set_state(Gst.State.NULL)
+            self._kill_ytdlp_child()
             self._start_recovery("EOS")
         elif t == Gst.MessageType.WARNING:
             warn, dbg = message.parse_warning()
@@ -372,6 +505,7 @@ class GstVisionPipeline:
             self._fps_value = self._fps_frames / (now - self._last_fps_t)
             self._fps_frames = 0
             self._last_fps_t = now
+        self._forbidden_streak = 0
         t0 = time.perf_counter()
         self._on_frame(frame, self._frame_id, time.time_ns(), self._cfg.source.uri, self._cfg.model)
         dt = (time.perf_counter() - t0) * 1000
@@ -438,6 +572,7 @@ class GstVisionPipeline:
 
     def stop(self) -> None:
         self._recover_stop.set()
+        self._kill_ytdlp_child()
         if self._main_loop:
             self._main_loop.quit()
         if self._pipeline and _GST_AVAILABLE:

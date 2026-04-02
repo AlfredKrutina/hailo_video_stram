@@ -1,14 +1,14 @@
 """
-Resolve user-facing media URIs to one string GStreamer can open (`playbin` / `uridecodebin`).
+Resolve user-facing media URIs for GStreamer.
 
 - **normalize_media_url**: adds `https://` for pasted links without a scheme (`youtu.be/...?si=...`, etc.).
-- **YouTube / youtu.be** (incl. `?si=` tracking): resolved via `yt-dlp --get-url`.
-- **Other platforms** (Vimeo, Twitch, Dailymotion, TikTok, …): same yt-dlp path when hostname matches.
-- **Unknown HTTPS pages**: yt-dlp is tried once; if the error looks like “unsupported URL”, the original URL is passed to GStreamer (often fails with a clear pipeline error).
-- **Direct files** (`*.mp4`, `*.m3u8`, …): no yt-dlp — passed straight through.
-- `file://` / RTSP: unchanged (see gst_pipeline for RTSP).
+- **Known portal hosts** (YouTube, Vimeo, Twitch, …): use `PlaybackSpec(kind=ytdlp_pipe)` — data is fed via
+  `yt-dlp -o -` into `fdsrc` so we never pass fragile `googlevideo.com` URLs through `souphttpsrc` (403).
+- **Unknown HTTPS pages**: yt-dlp `--get-url` once; on success use **direct** URL; on “unsupported URL” passthrough.
+- **Direct files** (`*.mp4`, …): `PlaybackSpec(direct)`.
+- `file://` / RTSP: `PlaybackSpec(direct)`.
 
-Returns (uri_for_gstreamer, None) or (None, error_message).
+Use `resolve_playback()` for the full contract; `resolve_playback_uri()` remains for backward compatibility.
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ import os
 import shutil
 import subprocess
 from urllib.parse import unquote, urlparse
+
+from services.ai_core.playback_spec import PlaybackSpec
 
 logger = logging.getLogger("ai_core.source_resolve")
 
@@ -201,10 +203,9 @@ def _resolve_file(uri: str) -> tuple[str | None, str | None]:
     return uri, None
 
 
-def resolve_playback_uri(configured_uri: str) -> tuple[str | None, str | None]:
+def resolve_playback(configured_uri: str) -> tuple[PlaybackSpec | None, str | None]:
     """
-    Returns (uri_for_gstreamer, error_message).
-    If error_message is set, do not start the pipeline; show error to the user.
+    Returns (PlaybackSpec, None) on success, or (None, error_message).
     """
     raw = normalize_media_url((configured_uri or "").strip())
     if not raw:
@@ -216,12 +217,16 @@ def resolve_playback_uri(configured_uri: str) -> tuple[str | None, str | None]:
 
     u = resolved or raw
     if _should_resolve_with_ytdlp(u):
-        return _resolve_youtube(u)
+        logger.info(
+            "playback_ytdlp_pipe",
+            extra={"extra_data": {"page": sanitize_uri(u)}},
+        )
+        return PlaybackSpec(kind="ytdlp_pipe", ytdlp_page_url=u), None
 
     if u.lower().startswith(("http://", "https://")) and not _looks_like_direct_http_media(u):
         direct, yerr = _try_ytdlp_generic(u)
         if direct:
-            return direct, None
+            return PlaybackSpec(kind="direct", uri=direct), None
         if yerr and "unsupported url" not in yerr.lower():
             return None, yerr
         logger.debug(
@@ -240,4 +245,17 @@ def resolve_playback_uri(configured_uri: str) -> tuple[str | None, str | None]:
             extra={"extra_data": {"uri": sanitize_uri(u)}},
         )
 
-    return resolved, None
+    return PlaybackSpec(kind="direct", uri=u), None
+
+
+def resolve_playback_uri(configured_uri: str) -> tuple[str | None, str | None]:
+    """
+    Legacy: returns (uri, err) for direct playback only.
+    For ytdlp_pipe sources returns (page_url, None) — prefer `resolve_playback`.
+    """
+    spec, err = resolve_playback(configured_uri)
+    if err or not spec:
+        return None, err
+    if spec.kind == "direct":
+        return spec.uri, None
+    return spec.ytdlp_page_url, None

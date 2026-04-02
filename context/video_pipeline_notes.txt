@@ -1,0 +1,46 @@
+Architektura videa / MJPEG — slabiny a časté omyly
+==================================================
+
+Video nejde přes stejný proces jako API
+---------------------------------------
+MJPEG běží jen v ai_core (aiohttp na 8081). Web (FastAPI) nemá route pro /mjpeg/… — jen statiku a API.
+Architektura počítá s Nginxem, který /mjpeg/ (a aliasy) přepošle na ai_core.
+
+Závislost na jednom řetězci
+---------------------------
+Živý obraz = GStreamer → JPEG fronta → MJPEG handler. Když pipeline nenaběhne nebo neposílá snímky,
+stream čeká ve smyčce (prázdná fronta); pro <img> to může vypadat jako „nic“ nebo dlouhé čekání
+(„bez odpovědi“ / stale v UI).
+
+RTSP / zdroj
+------------
+Špatná URL, síť, auth, kodek — pipeline může zůstat v chybovém stavu; recovery v kódu není náhrada
+za dostupný zdroj.
+
+Prostředí (Docker vs lokálně)
+-----------------------------
+Na Raspberry v Dockeru je potřeba správně namapovat zařízení (/dev/hailo0), proměnné, SOURCE_URI.
+Na vývojovém PC bez celého stacku často běží jen část služeb.
+
+Bez Nginxu chybí spojení UI ↔ MJPEG
+-----------------------------------
+MJPEG má být na stejném originu přes cesty jako /mjpeg/stream.mjpeg — to předpokládá proxy, ne čistý port 8080.
+
+Nejčastější příčina „žádné video na webu“
+---------------------------------------
+1) Otevíráš UI přímo na portu web kontejneru (např. http://<host>:8080) místo přes Nginx (typicky port 80).
+   Prohlížeč vyžádá http://<host>:8080/mjpeg/stream.mjpeg → request jde na FastAPI, kde /mjpeg/ neexistuje
+   → 404 / chyba na <img> → žádný obraz.
+   Přes Nginx na :80 stejná cesta jde na ai_core a stream funguje (pokud ai_core produkuje snímky).
+
+2) ai_core neběží, spadl, nebo pipeline nedává JPEG (špatný zdroj, RTSP, GStreamer) — pak i přes správný
+   Nginx obraz nepřijde nebo se nepřipojí v časovém limitu UI.
+
+Rychlá kontrola
+---------------
+- Jdu na UI přes port 80 (ne jen 8080)?
+- Běží kontejner ai_core a v logu není trvalá chyba pipeline?
+- curl nebo prohlížeč: http://<host>/mjpeg/stream.mjpeg (přes Nginx) — multipart stream nebo chyba?
+
+Tím se liší „vše ostatní jde, jen video ne“ (často špatný entrypoint :8080) vs. „nic nefunguje“ vs.
+„živý ai_core ale špatný zdroj“.

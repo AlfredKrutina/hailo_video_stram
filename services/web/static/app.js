@@ -1,5 +1,6 @@
 /**
  * MJPEG: stejný origin (/mjpeg/stream.mjpeg). Nginx aliasy: /video/stream.mjpeg, /stream.mjpeg, /api/stream_mjpeg.
+ * UI musí jít přes Nginx (typ. :80), ne přímo na :8080 — jinak FastAPI /mjpeg/ neumí a <img> dostane 404.
  * Nepoužívat crossOrigin u <img> – u multipart streamu to umí rozbít prohlížeč.
  */
 
@@ -164,16 +165,41 @@ let charts = {};
 
 function ensureCharts() {
   if (typeof Chart === "undefined") return;
-  const common = {
-    type: "line",
-    options: {
-      animation: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { display: false },
-        y: { beginAtZero: true },
+  const baseOpts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    interaction: { intersect: false, mode: "index" },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        enabled: true,
+        titleFont: { size: 11 },
+        bodyFont: { size: 11 },
       },
     },
+    scales: {
+      x: {
+        display: false,
+        grid: { display: false },
+      },
+      y: {
+        beginAtZero: true,
+        grid: { color: "rgba(255,255,255,0.07)" },
+        ticks: {
+          maxTicksLimit: 5,
+          font: { size: 9 },
+          color: "#8b8b96",
+        },
+      },
+    },
+    layout: {
+      padding: { left: 2, right: 4, top: 4, bottom: 2 },
+    },
+  };
+  const common = {
+    type: "line",
+    options: baseOpts,
   };
   if (!charts.lat) {
     charts.lat = new Chart($("chLat"), {
@@ -185,7 +211,12 @@ function ensureCharts() {
             label: "Latency ms",
             data: [],
             borderColor: "#3b82f6",
+            backgroundColor: "rgba(59,130,246,0.08)",
+            fill: true,
             tension: 0.25,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            pointHoverRadius: 3,
           },
         ],
       },
@@ -201,7 +232,12 @@ function ensureCharts() {
             label: "FPS",
             data: [],
             borderColor: "#22c55e",
+            backgroundColor: "rgba(34,197,94,0.08)",
+            fill: true,
             tension: 0.25,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            pointHoverRadius: 3,
           },
         ],
       },
@@ -218,18 +254,39 @@ function ensureCharts() {
             data: [],
             borderColor: "#f97316",
             tension: 0.25,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            pointHoverRadius: 3,
           },
           {
             label: "Hailo °C",
             data: [],
             borderColor: "#a855f7",
             tension: 0.25,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            pointHoverRadius: 3,
           },
         ],
       },
       options: {
-        ...common.options,
-        plugins: { legend: { display: true, labels: { boxWidth: 8, font: { size: 9 } } } },
+        ...baseOpts,
+        plugins: {
+          ...baseOpts.plugins,
+          legend: {
+            display: true,
+            position: "top",
+            align: "end",
+            labels: {
+              boxWidth: 10,
+              boxHeight: 8,
+              font: { size: 9 },
+              color: "#a1a1aa",
+              usePointStyle: true,
+              padding: 6,
+            },
+          },
+        },
       },
     });
   }
@@ -462,8 +519,9 @@ function initWs() {
       if (ex.playback_uri && ex.playback_uri !== ex.configured_uri) {
         lines.push("Přehrávání: " + ex.playback_uri);
       }
-      if (ex.rtsp_mode) {
-        lines.push("RTSP pipeline: " + ex.rtsp_mode);
+      const ingress = ex.ingress_mode || ex.rtsp_mode;
+      if (ingress) {
+        lines.push("Režim ingestu: " + ingress);
       }
       if (lines.length) {
         diag.hidden = false;
