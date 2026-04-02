@@ -45,6 +45,9 @@ def create_mjpeg_app(q: queue.Queue[bytes | None]) -> web.Application:
         )
         await resp.prepare(request)
         boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+        # Okamžitý první chunk — prohlížeč/Nginx nedostanou „visící“ chunked spojení bez těla
+        # (sníží ERR_INCOMPLETE_CHUNKED_ENCODING při pomalém náběhu RTSP).
+        await resp.write(boundary + _PLACEHOLDER_JPEG + b"\r\n")
         loop = asyncio.get_event_loop()
 
         def _get_chunk() -> bytes | None:
@@ -54,7 +57,8 @@ def create_mjpeg_app(q: queue.Queue[bytes | None]) -> web.Application:
                 return None
 
         empty_s = 0
-        placeholder_after_s = 5
+        # Kratší než dříve 5 s — při záseku pipeline držet multipart živý.
+        placeholder_after_s = 2
         first_placeholder_logged = False
 
         try:

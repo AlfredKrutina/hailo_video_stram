@@ -36,6 +36,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       RPY_CONFIG: /app/config/default.yaml
       SOURCE_URI: ${SOURCE_URI:-file:///opt/rpy/assets/sample.mp4}
+      # RTSP z Dockeru: TCP často nutné (UDP kamera/LAN). Vypnout: RPY_RTSP_FORCE_TCP=0
+      RPY_RTSP_FORCE_TCP: ${RPY_RTSP_FORCE_TCP:-1}
+      RPY_RTSP_LATENCY_MS: ${RPY_RTSP_LATENCY_MS:-300}
+      # Volitelně: vlastní výběr formátu pro yt-dlp -o - (YouTube pipe)
+      # RPY_YTDLP_FORMAT: "best[height<=720][ext=mp4]/best/worst"
       USE_HAILO: ${USE_HAILO:-1}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rpy:rpy@postgres:5432/rpy}
     volumes:

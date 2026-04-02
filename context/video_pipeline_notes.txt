@@ -17,6 +17,15 @@ RTSP / zdroj
 Špatná URL, síť, auth, kodek — pipeline může zůstat v chybovém stavu; recovery v kódu není náhrada
 za dostupný zdroj.
 
+Z Dockeru často nefunguje RTSP přes UDP (NAT/firewall) — v ai_core se rtspsrc ladí na TCP
+(RPY_RTSP_FORCE_TCP, výchozí 1) a latence RPY_RTSP_LATENCY_MS. Pokud kamera vyžaduje výhradně UDP,
+nastav RPY_RTSP_FORCE_TCP=0. Alternativa: RPY_RTSP_USE_URIDECODEBIN=1 (jiná cesta decode).
+
+YouTube (yt-dlp -o - → fdsrc → decodebin3): typická chyba „Stream doesn't contain enough data“ vzniká,
+když výstup není souvislý progressive stream nebo když je před decode příliš malá fronta. V kódu je
+preferovaný formát s mp4, větší queue a volitelně RPY_YTDLP_FORMAT. Pro YouTube se přidává
+player_client=android (méně fragmentované než výchozí web klient).
+
 Prostředí (Docker vs lokálně)
 -----------------------------
 Na Raspberry v Dockeru je potřeba správně namapovat zařízení (/dev/hailo0), proměnné, SOURCE_URI.

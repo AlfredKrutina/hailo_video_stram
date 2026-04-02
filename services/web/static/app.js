@@ -312,21 +312,59 @@ function layoutOverlay() {
 
 function drawBoxes(detections) {
   const svg = $("overlay");
-  if (!detections || !detections.detections || !detections.detections.length) {
+  const pill = $("detPill");
+  const list = detections && detections.detections ? detections.detections : [];
+  if (pill) {
+    if (list.length) {
+      pill.hidden = false;
+      pill.textContent = `AI · ${list.length}`;
+    } else {
+      pill.hidden = true;
+    }
+  }
+  if (!list.length) {
     svg.innerHTML = "";
     return;
   }
   svg.setAttribute("viewBox", "0 0 1 1");
   const frag = document.createDocumentFragment();
-  detections.detections.forEach((d) => {
+  const confSlider = $("conf");
+  const thr = confSlider ? parseFloat(confSlider.value) : 0.25;
+  list.forEach((d) => {
     const b = d.box;
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const lowConf = d.confidence != null && d.confidence < thr;
+    g.setAttribute("class", lowConf ? "det-group det-group--warn" : "det-group");
     const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    r.setAttribute("class", "det-box");
     r.setAttribute("x", String(b.x));
     r.setAttribute("y", String(b.y));
     r.setAttribute("width", String(b.w));
     r.setAttribute("height", String(b.h));
-    r.setAttribute("rx", "0.008");
-    frag.appendChild(r);
+    r.setAttribute("rx", "0.006");
+    const label = d.label || "?";
+    const pct = d.confidence != null ? `${(d.confidence * 100).toFixed(0)}%` : "";
+    const textStr = pct ? `${label} ${pct}` : label;
+    const pad = 0.004;
+    const fs = 0.026;
+    const ty = Math.max(fs + pad * 2, b.y - pad);
+    const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    const textW = Math.min(0.55, textStr.length * 0.0145);
+    bg.setAttribute("class", "det-label-bg");
+    bg.setAttribute("x", String(b.x));
+    bg.setAttribute("y", String(ty - fs - pad));
+    bg.setAttribute("width", String(textW));
+    bg.setAttribute("height", String(fs + pad * 2));
+    bg.setAttribute("rx", "0.003");
+    const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    t.setAttribute("class", "det-label");
+    t.setAttribute("x", String(b.x + pad));
+    t.setAttribute("y", String(ty - pad));
+    t.textContent = textStr;
+    g.appendChild(r);
+    g.appendChild(bg);
+    g.appendChild(t);
+    frag.appendChild(g);
   });
   svg.innerHTML = "";
   svg.appendChild(frag);
@@ -695,28 +733,40 @@ function initWs() {
     const m = $("metrics");
     const parts = [];
     if (tel.inference_latency_ms != null) {
-      parts.push(`Latence ${tel.inference_latency_ms.toFixed(1)} ms`);
+      parts.push(
+        `<span class="metric-item">Latence <strong>${tel.inference_latency_ms.toFixed(1)}</strong> ms</span>`,
+      );
     }
     if (tel.fps != null) {
-      parts.push(`FPS ${tel.fps.toFixed(1)}`);
+      parts.push(`<span class="metric-item">FPS <strong>${tel.fps.toFixed(1)}</strong></span>`);
     }
     if (tel.soc_temp_c != null) {
-      parts.push(`SoC ${tel.soc_temp_c.toFixed(1)} °C`);
+      parts.push(
+        `<span class="metric-item">SoC <strong>${tel.soc_temp_c.toFixed(1)}</strong> °C</span>`,
+      );
     }
     if (tel.hailo_temp_c != null) {
-      parts.push(`Hailo ${tel.hailo_temp_c.toFixed(1)} °C`);
+      parts.push(
+        `<span class="metric-item">Hailo <strong>${tel.hailo_temp_c.toFixed(1)}</strong> °C</span>`,
+      );
     }
     if (tel.bitrate_kbps != null) {
-      parts.push(`Bitrate ${tel.bitrate_kbps.toFixed(0)} kb/s`);
+      parts.push(
+        `<span class="metric-item">Bitrate <strong>${tel.bitrate_kbps.toFixed(0)}</strong> kb/s</span>`,
+      );
     }
     if (tel.packet_loss_pct != null) {
-      parts.push(`Ztráta paketů ${tel.packet_loss_pct.toFixed(2)} %`);
+      parts.push(
+        `<span class="metric-item">Ztráta paketů <strong>${tel.packet_loss_pct.toFixed(2)}</strong> %</span>`,
+      );
     }
     if (tel.camera_connected === false) {
-      parts.push("kamera: offline");
+      parts.push('<span class="metric-item metric-item--warn">kamera: offline</span>');
     }
     if (tel.last_error) {
-      parts.push("chyba: " + String(tel.last_error).slice(0, 160));
+      parts.push(
+        `<span class="metric-item metric-item--err">chyba: ${escapeHtml(String(tel.last_error).slice(0, 160))}</span>`,
+      );
       const errStr = String(tel.last_error).slice(0, 280);
       if (errStr !== lastPipelineErrorBanner) {
         lastPipelineErrorBanner = errStr;
@@ -725,7 +775,7 @@ function initWs() {
     } else {
       lastPipelineErrorBanner = "";
     }
-    m.textContent = parts.join(" · ");
+    m.innerHTML = parts.join('<span class="metric-dot" aria-hidden="true"> · </span>');
 
     const diag = $("pipelineDiagnostics");
     if (diag) {

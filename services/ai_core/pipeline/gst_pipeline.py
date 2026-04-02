@@ -121,6 +121,54 @@ def _apply_browser_like_headers(source: Any) -> None:
     logger.debug("http_source_browser_headers", extra={"extra_data": {"element": name}})
 
 
+# GST_RTSP_LOWER_TRANS_TCP — z Dockeru/LAN často nefunguje UDP kameře; TCP je spolehlivější.
+_RTSPSRC_PROTOCOL_TCP = 0x00000004
+
+
+def _configure_rtspsrc_if_needed(element: Any) -> None:
+    """
+    Nastaví rtspsrc pro reálné kamery: latence + (výchozí) pouze TCP.
+
+    Env:
+    - RPY_RTSP_LATENCY_MS (ms, default 300)
+    - RPY_RTSP_FORCE_TCP: 1/true (default) = jen TCP; 0 = výchozí výběr GStreameru
+    """
+    assert Gst is not None
+    try:
+        fn = (element.get_factory().get_name() or "").lower()
+    except Exception:
+        return
+    if fn != "rtspsrc":
+        return
+    latency_ms = int(os.environ.get("RPY_RTSP_LATENCY_MS", "300"))
+    try:
+        element.set_property("latency", latency_ms)
+    except Exception as e:
+        logger.debug("rtspsrc_latency_skip", extra={"extra_data": {"err": str(e)}})
+    force_tcp = os.environ.get("RPY_RTSP_FORCE_TCP", "1").lower() not in ("0", "false", "no")
+    if not force_tcp:
+        logger.debug("rtspsrc_tcp_disabled", extra={"extra_data": {}})
+        return
+    try:
+        element.set_property("protocols", _RTSPSRC_PROTOCOL_TCP)
+    except Exception as e:
+        logger.warning(
+            "rtspsrc_tcp_protocols_failed",
+            extra={"extra_data": {"err": str(e)}},
+        )
+        return
+    if os.environ.get("ENVIRONMENT", "").lower() == "staging":
+        logger.info(
+            "rtspsrc_tuned",
+            extra={
+                "extra_data": {
+                    "latency_ms": latency_ms,
+                    "protocols": "TCP",
+                },
+            },
+        )
+
+
 class GstVisionPipeline:
     def __init__(
         self,
@@ -358,16 +406,31 @@ class GstVisionPipeline:
             if not ytdlp or not page:
                 self._on_state(PipelineState.FAILED, "yt-dlp nebo URL chybí")
                 return
+            # Jednosouborový progressive MP4/WebM lépe snáší fdsrc→decodebin než čisté DASH/HLS
+            # (jinak častá chyba typefind: „Stream doesn't contain enough data“).
+            fmt = os.environ.get(
+                "RPY_YTDLP_FORMAT",
+                "best[height<=720][ext=mp4]/best[ext=mp4]/best[height<=720]/best/worst",
+            )
+            pl = page.lower()
             cmd = [
                 ytdlp,
                 "-f",
-                "best[height<=720]/best[height<=1080]/best/worst",
+                fmt,
                 "-o",
                 "-",
                 "--no-playlist",
                 "--no-warnings",
-                page,
+                "--no-part",
+                "--retries",
+                "8",
+                "--fragment-retries",
+                "8",
             ]
+            if "youtu.be" in pl or "youtube.com" in pl:
+                # Web klient často vrací fragmentované streamy špatně čitelné z pipe bez obřího bufferu.
+                cmd.extend(["--extractor-args", "youtube:player_client=android"])
+            cmd.append(page)
             try:
                 self._ytdlp_proc = subprocess.Popen(
                     cmd,
@@ -382,14 +445,26 @@ class GstVisionPipeline:
             fd = self._ytdlp_proc.stdout.fileno()
             fdsrc = Gst.ElementFactory.make("fdsrc", "fdsrc")
             q0 = Gst.ElementFactory.make("queue", "qpipe")
-            q0.set_property("max-size-buffers", 16)
-            q0.set_property("max-size-time", 2 * 10**9)
-            decode = Gst.ElementFactory.make("decodebin", "decode")
+            # Velký buffer před decode — typefind potřebuje souvislý úvod streamu (zejm. u MP4).
+            q0.set_property("max-size-buffers", 0)
+            try:
+                q0.set_property("max-size-bytes", 48 * 1024 * 1024)
+            except Exception:
+                q0.set_property("max-size-buffers", 512)
+            q0.set_property("max-size-time", 15 * 10**9)
+            decode = Gst.ElementFactory.make("decodebin3", "decode") or Gst.ElementFactory.make(
+                "decodebin",
+                "decode",
+            )
             if fdsrc is None or q0 is None or decode is None:
                 self._on_state(PipelineState.FAILED, "fdsrc/decodebin missing")
                 self._kill_ytdlp_child()
                 return
             fdsrc.set_property("fd", fd)
+            try:
+                fdsrc.set_property("blocksize", 262144)
+            except Exception:
+                pass
             try:
                 fdsrc.set_property("is-live", True)
             except Exception:
@@ -406,11 +481,31 @@ class GstVisionPipeline:
             _linked: dict[str, bool] = {"done": False}
             self._connect_decodebin_video(decode, bin_sink, _linked)
             self._ingress_mode = "ytdlp_pipe"
-            logger.info("ingress_ytdlp_pipe", extra={"extra_data": {"page": sanitize_uri(page)}})
+            logger.info(
+                "ingress_ytdlp_pipe",
+                extra={
+                    "extra_data": {
+                        "page": sanitize_uri(page),
+                        "format": fmt,
+                        "decode": "decodebin3" if decode.get_factory().get_name() == "decodebin3" else "decodebin",
+                    },
+                },
+            )
             self._wire_decode_bus_and_play(asink, jsink)
             return
 
         resolved = spec.uri or ""
+
+        def on_source_setup(_bin: Any, src: Any) -> None:
+            _apply_browser_like_headers(src)
+            _configure_rtspsrc_if_needed(src)
+            try:
+                child_name = (src.get_factory().get_name() or "").lower()
+            except Exception:
+                return
+            if child_name == "uridecodebin":
+                src.connect("source-setup", on_source_setup)
+
         use_rtsp_playbin = (
             resolved.lower().startswith("rtsp://")
             and _rtsp_use_playbin_video_only()
@@ -432,6 +527,7 @@ class GstVisionPipeline:
                 except Exception:
                     pass
                 playbin.set_property("audio-sink", fake_audio)
+            playbin.connect("source-setup", on_source_setup)
             self._pipeline.add(playbin)
             self._pipeline.add(vsink_bin)
             self._ingress_mode = "playbin_video_only"
@@ -450,7 +546,7 @@ class GstVisionPipeline:
                 self._on_state(PipelineState.FAILED, "uridecodebin missing")
                 return
             decode.set_property("uri", resolved)
-            decode.connect("source-setup", lambda _bin, src: _apply_browser_like_headers(src))
+            decode.connect("source-setup", on_source_setup)
             self._pipeline.add(decode)
             self._pipeline.add(vsink_bin)
             self._ingress_mode = (

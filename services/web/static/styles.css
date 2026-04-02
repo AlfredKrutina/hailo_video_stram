@@ -8,6 +8,9 @@
   --good: #22c55e;
   --warn: #eab308;
   --bad: #ef4444;
+  --det-stroke: #4ade80;
+  --det-fill: rgba(74, 222, 128, 0.18);
+  --det-label-bg: rgba(15, 23, 42, 0.92);
 }
 
 * {
@@ -173,7 +176,17 @@ button:hover {
   padding: 1rem 1.25rem;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 1.1rem;
+}
+
+.det-pill {
+  font-size: 0.72rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(74, 222, 128, 0.45);
+  background: rgba(22, 101, 52, 0.25);
+  color: #bbf7d0;
+  font-variant-numeric: tabular-nums;
 }
 
 .diag-strip {
@@ -282,22 +295,33 @@ button:hover {
   overflow: visible;
 }
 
-.overlay rect {
-  fill: none;
-  stroke: var(--good);
-  stroke-width: 0.004;
+.overlay .det-box {
+  fill: var(--det-fill);
+  stroke: var(--det-stroke);
+  stroke-width: 0.012;
   vector-effect: non-scaling-stroke;
-  animation: pulseStroke 2.2s ease-in-out infinite;
+  filter: drop-shadow(0 0 3px rgba(74, 222, 128, 0.55));
 }
 
-@keyframes pulseStroke {
-  0%,
-  100% {
-    stroke-opacity: 0.95;
-  }
-  50% {
-    stroke-opacity: 0.55;
-  }
+.overlay .det-group--warn .det-box {
+  stroke: #fbbf24;
+  fill: rgba(251, 191, 36, 0.2);
+  filter: drop-shadow(0 0 3px rgba(251, 191, 36, 0.45));
+}
+
+.overlay .det-label-bg {
+  fill: var(--det-label-bg);
+  stroke: none;
+}
+
+.overlay .det-label {
+  fill: #f8fafc;
+  font-size: 0.028;
+  font-weight: 600;
+  font-family: system-ui, sans-serif;
+  paint-order: stroke fill;
+  stroke: rgba(0, 0, 0, 0.65);
+  stroke-width: 0.004;
 }
 
 .stream-fallback {
@@ -365,9 +389,30 @@ button:hover {
 .metrics {
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
+  align-items: center;
+  gap: 0.85rem 1.1rem;
   color: var(--muted);
-  line-height: 1.5;
+  line-height: 1.55;
+  font-size: 0.88rem;
+}
+
+.metrics strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.metrics .metric-dot {
+  opacity: 0.4;
+  user-select: none;
+}
+
+.metrics .metric-item--warn {
+  color: var(--warn);
+}
+
+.metrics .metric-item--err {
+  color: #fca5a5;
+  max-width: 100%;
 }
 
 .events .log {
