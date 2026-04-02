@@ -1,0 +1,54 @@
+# R-PY — příkazy pro maximální diagnostiku (spusť na Pi v ~/hailo_video_stram nebo kde máš compose)
+
+export COMPOSE="docker compose -f docker/docker-compose.yml"
+cd ~/hailo_video_stram   # uprav cestu
+
+# --- Stav kontejnerů a sítě ---
+$COMPOSE ps -a
+docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+# --- Health přes Nginx (jako prohlížeč) ---
+curl -sS http://127.0.0.1/health | jq . 2>/dev/null || curl -sS http://127.0.0.1/health
+
+# --- MJPEG: hlavičky + první bajty (multipart) ---
+curl -sS -D- -o /dev/null --max-time 5 http://127.0.0.1/mjpeg/stream.mjpeg || true
+curl -sS --max-time 3 http://127.0.0.1/mjpeg/stream.mjpeg | head -c 400 | xxd | head -20
+
+# --- Přímý ai_core (obejde Nginx) ---
+curl -sS -D- -o /dev/null --max-time 5 http://127.0.0.1:8081/mjpeg/stream.mjpeg || true
+
+# --- Nginx → upstream (502 = ai_core nedostupný / spadl) ---
+$COMPOSE logs --tail=100 nginx
+$COMPOSE exec nginx wget -qO- --timeout=3 http://ai_core:8081/ 2>&1 | head -5 || true
+
+# --- ai_core: GStreamer, zdroj, pády ---
+$COMPOSE logs --tail=200 ai_core
+$COMPOSE exec ai_core printenv | grep -E 'SOURCE_URI|RPY_|USE_HAILO|ENVIRONMENT' | sort
+
+# --- Soubor sample v image ---
+$COMPOSE exec ai_core test -f /opt/rpy/assets/sample.mp4 && echo OK_sample
+$COMPOSE exec ai_core ls -la /opt/rpy/assets/sample.mp4
+$COMPOSE exec ai_core ffprobe -v error -show_entries format=duration,size -show_streams -of default=nw=1 /opt/rpy/assets/sample.mp4
+
+# --- GStreamer smoke test uvnitř ai_core (file) ---
+$COMPOSE exec ai_core gst-launch-1.0 -e uridecodebin uri=file:///opt/rpy/assets/sample.mp4 ! videoconvert ! fakesink num-buffers=30 2>&1 | tail -30
+
+# --- RTSP z hosta (nahraď URL) ---
+# timeout 5 ffprobe -rtsp_transport tcp -v error -show_streams -of default=nw=1 'rtsp://...'
+
+# --- yt-dlp uvnitř kontejneru ---
+$COMPOSE exec ai_core which yt-dlp
+$COMPOSE exec ai_core yt-dlp --version
+
+# --- Web + DB ---
+$COMPOSE logs --tail=80 web
+$COMPOSE exec postgres psql -U rpy -d rpy -c '\dt' 2>&1 | head -30
+
+# --- Porty na hostu ---
+ss -tlnp | grep -E ':80|:8080|:8081|:5432|:6379' || netstat -tlnp 2>/dev/null | grep -E ':80|:8080|:8081'
+
+# --- Hailo zařízení (na Pi hostu) ---
+ls -la /dev/hailo0 2>&1
+
+# Ulož výstup do souboru pro poslání:
+#   bash -c '...vše výše...' 2>&1 | tee /tmp/rpy_diag.txt

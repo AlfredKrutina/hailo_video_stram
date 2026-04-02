@@ -38,6 +38,7 @@ from services.persistence.recording_store import (
     save_policy_to_db,
 )
 from services.persistence.session import get_database_url, init_db
+from services.web.diagnostics import collect_diagnostics
 from services.web.recording_api import validate_policy_against_catalog
 
 logger = logging.getLogger("web")
@@ -280,6 +281,27 @@ def detections_latest() -> Any:
 def telemetry() -> Any:
     raw = _redis_call(lambda: r.get("telemetry:latest"), op="get telemetry:latest")
     return json_loads_safe(raw, logger, "telemetry:latest")
+
+
+@app.get("/api/v1/diagnostics")
+async def diagnostics() -> Any:
+    """Aggregated checks for operators (Redis, DB, ai_core, MJPEG upstream)."""
+    try:
+        report = await collect_diagnostics(
+            r,
+            db_ok=_db_ok,
+            environment=os.environ.get("ENVIRONMENT"),
+        )
+    except redis.RedisError as e:
+        log_error(logger, ErrorCode.REDIS_COMMAND_FAILED, "diagnostics", exc=e)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": ErrorCode.REDIS_UNAVAILABLE.value,
+                "message": str(e),
+            },
+        ) from e
+    return report.model_dump(mode="json")
 
 
 @app.patch("/api/v1/model")

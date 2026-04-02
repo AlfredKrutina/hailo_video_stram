@@ -31,6 +31,10 @@
         <button type="button" class="seg-btn active" data-view="main" id="viewMain">Hlavní náhled</button>
         <button type="button" class="seg-btn" data-view="ai" id="viewAi">AI / substream</button>
       </div>
+      <div class="section-title">Diagnostika</div>
+      <p class="hint">Redis, Postgres, ai_core, MJPEG (přímo z web kontejneru + stejný origin jako prohlížeč). Otevírej UI přes port 80 (Nginx).</p>
+      <button type="button" id="btnDiagnostics">Spustit diagnostiku stacku</button>
+      <div id="diagPanel" class="diag-panel" hidden role="region" aria-label="Výsledek diagnostiky"></div>
     </aside>
     <main class="main">
       <div class="video-wrap" id="videoWrap">
@@ -69,6 +73,6 @@
       </div>
     </main>
   </div>
-  <script src="/assets/app.js?v=8" defer></script>
+  <script src="/assets/app.js?v=9" defer></script>
 </body>
 </html>

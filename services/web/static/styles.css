@@ -453,3 +453,56 @@ button:hover {
     grid-template-columns: 1fr;
   }
 }
+
+.diag-panel {
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  background: #0e0e12;
+}
+
+.diag-panel table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.diag-panel th,
+.diag-panel td {
+  text-align: left;
+  padding: 0.3rem 0.35rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.diag-panel th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.diag-summary {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.diag-sev-ok {
+  color: var(--good);
+  font-weight: 500;
+}
+
+.diag-sev-warn {
+  color: var(--warn);
+  font-weight: 500;
+}
+
+.diag-sev-fail {
+  color: var(--bad);
+  font-weight: 500;
+}

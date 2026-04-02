@@ -86,6 +86,139 @@ async function fetchHealth() {
   }
 }
 
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function renderDiagnosticsTable(report, clientCheck) {
+  const rows = [];
+  if (report?.checks) {
+    for (const c of report.checks) {
+      rows.push(c);
+    }
+  }
+  if (clientCheck) {
+    rows.push(clientCheck);
+  }
+  let html =
+    '<table><thead><tr><th>Kontrola</th><th>Stav</th><th>ms</th><th>Detail</th></tr></thead><tbody>';
+  for (const c of rows) {
+    const sev = c.severity || (c.ok ? "ok" : "fail");
+    const cls = sev === "ok" ? "diag-sev-ok" : sev === "warn" ? "diag-sev-warn" : "diag-sev-fail";
+    const ms = c.latency_ms != null ? String(c.latency_ms) : "—";
+    const id = escapeHtml(c.id || "");
+    const detail = escapeHtml(String(c.detail || "").slice(0, 520));
+    html += `<tr><td class="mono">${id}</td><td class="${cls}">${escapeHtml(sev)}</td><td class="mono">${ms}</td><td>${detail}</td></tr>`;
+  }
+  html += "</tbody></table>";
+  if (report?.summary) {
+    const s = report.summary;
+    const gen = escapeHtml(report.generated_at || "");
+    const total = report.total_ms != null ? report.total_ms : "—";
+    html = `<p class="mono diag-summary">Souhrn: ok=${s.ok} warn=${s.warn} fail=${s.fail} · server ${total} ms · ${gen}</p>${html}`;
+  }
+  return html;
+}
+
+async function measureMjpegBrowserTtfb(timeoutMs = 5000) {
+  const ac = new AbortController();
+  const t0 = performance.now();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const r = await fetch(mjpegUrl(), { signal: ac.signal, cache: "no-store" });
+    if (!r.ok) {
+      clearTimeout(timer);
+      return {
+        id: "mjpeg_browser_ttfb",
+        severity: "fail",
+        ok: false,
+        latency_ms: Math.round(performance.now() - t0),
+        detail: `HTTP ${r.status}`,
+        data: {},
+      };
+    }
+    const reader = r.body?.getReader();
+    if (!reader) {
+      clearTimeout(timer);
+      return {
+        id: "mjpeg_browser_ttfb",
+        severity: "fail",
+        ok: false,
+        latency_ms: null,
+        detail: "no body",
+        data: {},
+      };
+    }
+    const first = await reader.read();
+    clearTimeout(timer);
+    await reader.cancel().catch(() => {});
+    const ms = Math.round(performance.now() - t0);
+    const bytes = first.value?.byteLength ?? 0;
+    if (first.done && bytes === 0) {
+      return {
+        id: "mjpeg_browser_ttfb",
+        severity: "fail",
+        ok: false,
+        latency_ms: ms,
+        detail: "0 bajtů (stream hned skončil)",
+        data: {},
+      };
+    }
+    const ok = bytes > 0;
+    return {
+      id: "mjpeg_browser_ttfb",
+      severity: ok ? "ok" : "warn",
+      ok,
+      latency_ms: ms,
+      detail: ok ? `první chunk ${bytes} B` : "prázdný chunk",
+      data: { bytes },
+    };
+  } catch (e) {
+    clearTimeout(timer);
+    const name = e?.name || "";
+    return {
+      id: "mjpeg_browser_ttfb",
+      severity: "fail",
+      ok: false,
+      latency_ms: Math.round(performance.now() - t0),
+      detail: name === "AbortError" ? `timeout ${timeoutMs} ms` : String(e),
+      data: {},
+    };
+  }
+}
+
+async function runDiagnostics() {
+  const btn = $("btnDiagnostics");
+  const panel = $("diagPanel");
+  if (!btn || !panel) return;
+  btn.disabled = true;
+  panel.hidden = false;
+  panel.innerHTML = "<p>Probíhá…</p>";
+  try {
+    const [server, client] = await Promise.all([
+      fetch("/api/v1/diagnostics").then(async (res) => {
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(formatApiError(j, res));
+        return j;
+      }),
+      measureMjpegBrowserTtfb(5000),
+    ]);
+    panel.innerHTML = renderDiagnosticsTable(server, client);
+  } catch (e) {
+    panel.innerHTML = `<p class="diag-sev-fail">${escapeHtml(String(e))}</p>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function initDiagnostics() {
+  $("btnDiagnostics")?.addEventListener("click", runDiagnostics);
+}
+
 function mjpegUrl() {
   const u = new URL(MJPEG_PATH, window.location.origin);
   u.searchParams.set("t", String(Date.now()));
@@ -814,6 +947,7 @@ window.addEventListener("DOMContentLoaded", () => {
   fetchHealth();
   initSources();
   initViewToggle();
+  initDiagnostics();
 
   const img = $("mjpeg");
   attachMjpegHandlers(img);

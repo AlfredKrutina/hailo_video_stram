@@ -1,5 +1,6 @@
 Důležité: UI otevírat přes Nginx :80, ne přímo :8080 (web) — jinak /mjpeg/ není u FastAPI a obraz není.
 Viz context/video_pipeline_notes.txt
+Plná sada diagnostických příkazů: context/terminal_diagnostics.txt
 
 Nasazení po změnách (Pi nebo dev):
   cd <repo>

@@ -58,6 +58,7 @@ services:
     restart: unless-stopped
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-staging}
+      RPY_AI_CORE_MJPEG_URL: ${RPY_AI_CORE_MJPEG_URL:-http://ai_core:8081/stream.mjpeg}
       REDIS_URL: redis://redis:6379/0
       SNAPSHOT_DIR: /data/snapshots
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rpy:rpy@postgres:5432/rpy}

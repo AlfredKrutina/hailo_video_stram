@@ -401,6 +401,14 @@ class GstVisionPipeline:
             playbin.set_property("uri", resolved)
             playbin.set_property("flags", _GST_PLAY_FLAG_VIDEO)
             playbin.set_property("video-sink", vsink_bin)
+            # Headless Docker: bez audio-sink playsink zkusí ALSA → assert v gstplaysink.c
+            fake_audio = Gst.ElementFactory.make("fakesink", "playbin_audio_sink")
+            if fake_audio is not None:
+                try:
+                    fake_audio.set_property("sync", False)
+                except Exception:
+                    pass
+                playbin.set_property("audio-sink", fake_audio)
             self._pipeline.add(playbin)
             self._pipeline.add(vsink_bin)
             self._ingress_mode = "playbin_video_only"
