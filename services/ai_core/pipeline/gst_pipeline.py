@@ -447,6 +447,51 @@ class GstVisionPipeline:
 
         self._wire_decode_bus_and_play(asink, jsink)
 
+    def _try_loop_seek_after_eos(self) -> bool:
+        """
+        Po EOS u konečného média znovu přehrát od začátku (seek), místo rebuild pipeline.
+
+        Platí pro file:// a běžné krátké HTTP(S) MP4 dema. RTSP / yt-dlp pipe necháváme
+        na recovery (živý stream nebo jiná sémantika EOS).
+        """
+        assert Gst is not None
+        uri = (self._last_playback_uri or self._cfg.source.uri or "").strip()
+        ul = uri.lower()
+        if ul.startswith("rtsp://") or self._ingress_mode == "ytdlp_pipe":
+            return False
+        if not (ul.startswith("file://") or ul.startswith("http://") or ul.startswith("https://")):
+            return False
+        if not self._pipeline:
+            return False
+        try:
+            self._pipeline.set_state(Gst.State.PAUSED)
+            ok = self._pipeline.seek_simple(
+                Gst.Format.TIME,
+                Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+                0,
+            )
+            if not ok:
+                logger.warning("eos_seek_simple_returned_false", extra={"extra_data": {"uri": sanitize_uri(uri)}})
+                self._pipeline.set_state(Gst.State.NULL)
+                return False
+            ret = self._pipeline.set_state(Gst.State.PLAYING)
+            if ret == Gst.StateChangeReturn.FAILURE:
+                logger.warning("eos_seek_playing_failed", extra={"extra_data": {"uri": sanitize_uri(uri)}})
+                self._pipeline.set_state(Gst.State.NULL)
+                return False
+        except Exception as e:
+            logger.warning("eos_seek_loop_exc", extra={"extra_data": {"err": str(e), "uri": sanitize_uri(uri)}})
+            try:
+                self._pipeline.set_state(Gst.State.NULL)
+            except Exception:
+                pass
+            return False
+        self._last_gst_error = None
+        self._controller.transition(PipelineState.RUNNING)
+        self._on_state(PipelineState.RUNNING, None)
+        logger.info("eos_seek_loop_ok", extra={"extra_data": {"uri": sanitize_uri(uri)}})
+        return True
+
     def _on_bus_message(self, bus: Any, message: Any) -> None:
         assert Gst is not None
         t = message.type
@@ -479,6 +524,11 @@ class GstVisionPipeline:
             self._start_recovery(str(err))
         elif t == Gst.MessageType.EOS:
             logger.warning("gst_eos")
+            # Konečné soubory / krátké HTTP MP4: po dohrání přijde EOS. Původní chování
+            # (NULL + recovery) neustále restartovalo pipeline → málo snímků, prázdný MJPEG,
+            # „AI nic nedělá“. Seek na 0 udrží ingest v chodu bez zbytečných cyklů.
+            if self._try_loop_seek_after_eos():
+                return
             self._last_gst_error = "EOS (konec streamu nebo odpojení)"
             self._controller.transition(PipelineState.PAUSED)
             self._on_state(PipelineState.RECOVERING, self._last_gst_error)
