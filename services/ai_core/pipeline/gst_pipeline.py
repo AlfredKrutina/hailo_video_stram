@@ -2,7 +2,7 @@
 GStreamer ingest for vision pipeline.
 
 Ingress modes:
-- **RTSP** — `playbin` video-only (optional `uridecodebin` via env).
+- **RTSP** — `playbin` video-only + fakesink audio/text (optional `uridecodebin` via env, RTSP pak video-only caps).
 - **Direct URI** — `uridecodebin` (file, http mp4, RTSP when forced).
 - **Portal (YouTube, …)** — `yt-dlp -o -` → `fdsrc` → `decodebin` (avoids googlevideo + souphttpsrc 403).
 
@@ -58,7 +58,8 @@ def gst_init() -> bool:
     return True
 
 
-# playbin: pouze video — bez audio větve (kamery často posílají G.711/PCM, které rozbijí decodebin)
+# playbin: pouze video — bez audio/text větve (kamery často nemají zvuk nebo posílají G.711/PCM,
+# které v headless prostředí rozbijí playsink / decodebin).
 _GST_PLAY_FLAG_VIDEO = 1
 
 
@@ -68,6 +69,56 @@ def _rtsp_use_playbin_video_only() -> bool:
         "true",
         "yes",
     )
+
+
+def _rtsp_uridecodebin_allow_audio() -> bool:
+    """Výchozí: jen video z RTSP přes uridecodebin (bez audio autoplug). Zapnutí: RPY_RTSP_URIDECODEBIN_ALLOW_AUDIO=1."""
+    return os.environ.get("RPY_RTSP_URIDECODEBIN_ALLOW_AUDIO", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _configure_uridecodebin_video_only(decode: Any, *, reason: str) -> None:
+    """
+    Omezí uridecodebin na video výstupy — IP kamery často přidávají audio stopu (G.711, AAC, PCM),
+    u které chybí dekodér nebo shodí celý decodebin chybou na bus.
+    """
+    assert Gst is not None
+    if _rtsp_uridecodebin_allow_audio():
+        return
+    caps = Gst.Caps.from_string("video/x-raw")
+    try:
+        decode.set_property("caps", caps)
+    except Exception as e:
+        logger.warning(
+            "uridecodebin_video_only_caps_failed",
+            extra={"extra_data": {"err": str(e), "reason": reason}},
+        )
+        return
+    if os.environ.get("ENVIRONMENT", "").lower() == "staging":
+        logger.info(
+            "uridecodebin_video_only_caps",
+            extra={"extra_data": {"reason": reason, "caps": "video/x-raw"}},
+        )
+
+
+def _make_fakesink(name: str) -> Any:
+    """Tichý sink pro playbin (headless, žádný ALSA)."""
+    assert Gst is not None
+    sink = Gst.ElementFactory.make("fakesink", name)
+    if sink is None:
+        return None
+    try:
+        sink.set_property("sync", False)
+    except Exception:
+        pass
+    try:
+        sink.set_property("async", False)
+    except Exception:
+        pass
+    return sink
 
 
 # Odkazy z yt-dlp (googlevideo.com) bez hlaviček často končí 403 Forbidden u souphttpsrc.
@@ -710,14 +761,19 @@ class GstVisionPipeline:
             playbin.set_property("uri", resolved)
             playbin.set_property("flags", _GST_PLAY_FLAG_VIDEO)
             playbin.set_property("video-sink", vsink_bin)
-            # Headless Docker: bez audio-sink playsink zkusí ALSA → assert v gstplaysink.c
-            fake_audio = Gst.ElementFactory.make("fakesink", "playbin_audio_sink")
+            # Headless Docker: bez audio/text sink playsink sahá po ALSA → assert v gstplaysink.c
+            fake_audio = _make_fakesink("playbin_audio_sink")
             if fake_audio is not None:
-                try:
-                    fake_audio.set_property("sync", False)
-                except Exception:
-                    pass
                 playbin.set_property("audio-sink", fake_audio)
+            fake_text = _make_fakesink("playbin_text_sink")
+            if fake_text is not None:
+                try:
+                    playbin.set_property("text-sink", fake_text)
+                except Exception as e:
+                    logger.debug(
+                        "playbin_text_sink_unsupported",
+                        extra={"extra_data": {"err": str(e)}},
+                    )
             playbin.connect("source-setup", on_source_setup)
             self._pipeline.add(playbin)
             self._pipeline.add(vsink_bin)
@@ -727,7 +783,7 @@ class GstVisionPipeline:
                 extra={
                     "extra_data": {
                         "mode": self._ingress_mode,
-                        "hint": "bez audio stopy — kamery často posílají kodek, který decodebin nezvládne",
+                        "hint": "jen video (flags) + fakesink audio/text — kamery bez zvuku nebo se špatným kodekem",
                     },
                 },
             )
@@ -736,6 +792,8 @@ class GstVisionPipeline:
             if decode is None:
                 self._on_state(PipelineState.FAILED, "uridecodebin missing")
                 return
+            if resolved.lower().startswith("rtsp://"):
+                _configure_uridecodebin_video_only(decode, reason="rtsp_camera")
             decode.set_property("uri", resolved)
             decode.connect("source-setup", on_source_setup)
             self._pipeline.add(decode)

@@ -21,6 +21,10 @@ Z Dockeru často nefunguje RTSP přes UDP (NAT/firewall) — v ai_core se rtspsr
 (RPY_RTSP_FORCE_TCP, výchozí 1) a latence RPY_RTSP_LATENCY_MS. Pokud kamera vyžaduje výhradně UDP,
 nastav RPY_RTSP_FORCE_TCP=0. Alternativa: RPY_RTSP_USE_URIDECODEBIN=1 (jiná cesta decode).
 
+Kamery: často žádný zvuk nebo audio kodek (G.711, PCM), který v Dockeru bez dekodéru shodí pipeline.
+Výchozí: playbin jen video + fakesink pro audio/text; u RTSP+uridecodebin omezení uridecodebin na video/x-raw
+(RPY_RTSP_URIDECODEBIN_ALLOW_AUDIO=1 obnoví i audio autoplug).
+
 YouTube: výchozí je řetězec yt-dlp → ffmpeg (MPEG-TS) → fdsrc → decodebin (RPY_YTDLP_FFMPEG_TS=1).
 MPEG-TS má pro GStreamer čitelné sync byty — mizí častá chyba typefind „Stream doesn't contain enough data“
 u surového stdout z yt-dlp (fragmentovaný MP4/WebM). Vypnout remux: RPY_YTDLP_FFMPEG_TS=0.
