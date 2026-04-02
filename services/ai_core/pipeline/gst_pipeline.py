@@ -445,17 +445,24 @@ class GstVisionPipeline:
             fd = self._ytdlp_proc.stdout.fileno()
             fdsrc = Gst.ElementFactory.make("fdsrc", "fdsrc")
             q0 = Gst.ElementFactory.make("queue", "qpipe")
-            # Velký buffer před decode — typefind potřebuje souvislý úvod streamu (zejm. u MP4).
-            q0.set_property("max-size-buffers", 0)
+            # Buffer před decode — typefind potřebuje souvislý úvod MP4; příliš velké hodnoty
+            # na Raspberry snadno OOM → pád procesu → Nginx 502 na MJPEG.
+            buf_mb = int(os.environ.get("RPY_YTDLP_QUEUE_MB", "12"))
+            buf_bytes = max(4, buf_mb) * 1024 * 1024
             try:
-                q0.set_property("max-size-bytes", 48 * 1024 * 1024)
+                q0.set_property("max-size-buffers", 0)
+                q0.set_property("max-size-bytes", buf_bytes)
             except Exception:
-                q0.set_property("max-size-buffers", 512)
-            q0.set_property("max-size-time", 15 * 10**9)
-            decode = Gst.ElementFactory.make("decodebin3", "decode") or Gst.ElementFactory.make(
-                "decodebin",
-                "decode",
-            )
+                q0.set_property("max-size-buffers", 256)
+            q0.set_property("max-size-time", 12 * 10**9)
+            # decodebin3 umí u fdsrc/stdout vyvolat podivné chyby typu „parse … pipe“ na některých
+            # verzích pluginů — výchozí je klasický decodebin; decodebin3 jen přes RPY_USE_DECODEBIN3=1.
+            use_db3 = os.environ.get("RPY_USE_DECODEBIN3", "").lower() in ("1", "true", "yes")
+            decode = (
+                Gst.ElementFactory.make("decodebin3", "decode")
+                if use_db3
+                else Gst.ElementFactory.make("decodebin", "decode")
+            ) or Gst.ElementFactory.make("decodebin", "decode")
             if fdsrc is None or q0 is None or decode is None:
                 self._on_state(PipelineState.FAILED, "fdsrc/decodebin missing")
                 self._kill_ytdlp_child()
@@ -487,7 +494,7 @@ class GstVisionPipeline:
                     "extra_data": {
                         "page": sanitize_uri(page),
                         "format": fmt,
-                        "decode": "decodebin3" if decode.get_factory().get_name() == "decodebin3" else "decodebin",
+                        "decode": (decode.get_factory().get_name() or "decodebin"),
                     },
                 },
             )

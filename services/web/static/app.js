@@ -582,9 +582,11 @@ function attachMjpegHandlers(img) {
     }
     setStreamPill("dead", "MJPEG · chyba");
     showStreamError(true);
-    if (streamState._mjpegErrorRetries < 4) {
+    if (streamState._mjpegErrorRetries < 10) {
       streamState._mjpegErrorRetries += 1;
-      setTimeout(() => reloadMjpeg(), 700);
+      const step = Math.min(streamState._mjpegErrorRetries - 1, 5);
+      const delay = Math.min(10000, 500 + step * 900);
+      setTimeout(() => reloadMjpeg(), delay);
     }
   });
 }
@@ -655,7 +657,7 @@ async function swapSource() {
     setTimeout(() => {
       streamState._mjpegErrorRetries = 0;
       reloadMjpeg();
-    }, 600);
+    }, 1800);
   } catch (e) {
     $("swapState").textContent = String(e);
     setAppAlert("error", `Zdroj: ${String(e)}`, 0);
