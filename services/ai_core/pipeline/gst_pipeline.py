@@ -150,11 +150,16 @@ class GstVisionPipeline:
         }
 
     def _create_vsink_bin(self) -> tuple[Any, Any, Any]:
-        """Bin: queue → RGB tee → (appsink infer + jpeg). Vrací (vsink_bin, asink, jsink)."""
+        """Bin: queue → videoscale → videoconvert → RGB caps → tee → (appsink infer + jpeg).
+
+        Bez videoscale selže vyjednávání u 1080p/4K zdrojů: videoconvert nemění rozlišení,
+        fixed caps 640×480 pak končí not-negotiated (v logu často jako chyba u qtdemux).
+        """
         assert Gst is not None
         vsink_bin = Gst.Bin.new("vsink")
         q1 = Gst.ElementFactory.make("queue", "vq1")
         q1.set_property("max-size-buffers", 2)
+        scale = Gst.ElementFactory.make("videoscale", "vscale")
         conv = Gst.ElementFactory.make("videoconvert", "conv")
         caps = Gst.ElementFactory.make("capsfilter", "caps")
         caps.set_property(
@@ -181,12 +186,12 @@ class GstVisionPipeline:
         jsink.set_property("max-buffers", 2)
         jsink.set_property("drop", True)
 
-        for el in (q1, conv, caps, tee, q2, asink, q3, jconv, jenc, jsink):
+        for el in (q1, scale, conv, caps, tee, q2, asink, q3, jconv, jenc, jsink):
             if el is None:
                 raise RuntimeError("missing GStreamer element in vsink bin")
             vsink_bin.add(el)
 
-        if not q1.link(conv) or not conv.link(caps) or not caps.link(tee):
+        if not q1.link(scale) or not scale.link(conv) or not conv.link(caps) or not caps.link(tee):
             raise RuntimeError("vsink bin link failed (tee)")
 
         def _request_tee_pad(t: Any) -> Any:
