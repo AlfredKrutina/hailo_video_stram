@@ -1,0 +1,17 @@
+Nasazení po změnách (Pi nebo dev):
+  cd <repo>
+  git pull
+  docker compose -f docker/docker-compose.yml build ai_core web --no-cache
+  docker compose -f docker/docker-compose.yml up -d --force-recreate nginx ai_core web
+
+Ověření MJPEG (na stroji kde běží Nginx):
+  curl -sI http://127.0.0.1/mjpeg/stream.mjpeg
+  curl -sI http://127.0.0.1/video/stream.mjpeg
+  curl -sI http://127.0.0.1/stream.mjpeg
+  Očekávej HTTP 200 a Content-Type související s multipart nebo streamem.
+
+Tvrdý refresh prohlížeče (Ctrl+F5) kvůli cache statiky.
+
+Vlastní MP4 mimo image: v docker-compose u ai_core odkomentujte řádek
+  ../samples:/data/samples:ro
+a vložte soubory do projektu ./samples/ na hostu.

@@ -1,4 +1,12 @@
-"""Engine a session factory."""
+"""
+SQLAlchemy engine and session scope for PostgreSQL.
+
+Lifecycle:
+- `init_db()` creates tables and sessionmaker (call once at process startup).
+- `session_scope()` commits on success, rolls back on any exception, always closes.
+
+Environment: `DATABASE_URL` (e.g. postgresql+psycopg://...). If unset, helpers return None / raise on scope use.
+"""
 
 from __future__ import annotations
 

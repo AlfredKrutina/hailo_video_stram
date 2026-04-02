@@ -23,6 +23,37 @@ body {
   font-size: 14px;
 }
 
+body.has-app-alert {
+  padding-top: 2.75rem;
+}
+
+.app-alert {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  padding: 0.55rem 1rem;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-alert--error {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fecaca;
+}
+
+.app-alert--warn {
+  background: rgba(234, 179, 8, 0.14);
+  color: #fde68a;
+}
+
+.app-alert--info {
+  background: rgba(59, 130, 246, 0.14);
+  color: #bfdbfe;
+}
+
 .shell {
   display: grid;
   grid-template-columns: minmax(260px, 300px) 1fr;

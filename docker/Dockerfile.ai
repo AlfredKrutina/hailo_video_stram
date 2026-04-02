@@ -6,8 +6,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
     libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
-    yt-dlp ffmpeg \
+    yt-dlp ffmpeg curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Malý MP4 v image (mimo /data/samples — bind mount by ho jinak přepsal prázdnou složkou)
+RUN mkdir -p /opt/rpy/assets \
+    && curl -fsSL -o /opt/rpy/assets/sample.mp4 \
+      "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"
 
 WORKDIR /app
 

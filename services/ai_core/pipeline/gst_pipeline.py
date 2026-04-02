@@ -1,4 +1,14 @@
-"""GStreamer ingest: uridecodebin or playbin(RTSP video-only) → RGB → tee → appsink + MJPEG."""
+"""
+GStreamer ingest for vision pipeline.
+
+Two ingress modes:
+- **RTSP** — `playbin` with video-only flags (avoids decodebin failing on obscure audio codecs; see NVR/VLC warnings).
+- **Other URIs** — `uridecodebin` (HTTP file, YouTube-resolved URL, local file).
+
+Downstream: fixed RGB size → tee → appsink (numpy inference) + jpegenc → MJPEG queue.
+
+Errors on the bus trigger recovery with backoff; see `shared.errors.ErrorCode.GST_PIPELINE_ERROR` for log correlation.
+"""
 
 from __future__ import annotations
 

@@ -41,7 +41,8 @@ services:
     volumes:
       - ../config:/app/config:ro
       - snapshots:/data/snapshots
-      - ../samples:/data/samples:ro
+      # Volitelně vlastní videa: odkomentujte a vložte např. sample.mp4 do ./samples/
+      # - ../samples:/data/samples:ro
     depends_on:
       redis:
         condition: service_healthy

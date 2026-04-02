@@ -1,5 +1,5 @@
 /**
- * MJPEG: stejný origin jako stránka (/mjpeg/stream.mjpeg přes Nginx).
+ * MJPEG: stejný origin (/mjpeg/stream.mjpeg). Nginx aliasy: /video/stream.mjpeg, /stream.mjpeg, /api/stream_mjpeg.
  * Nepoužívat crossOrigin u <img> – u multipart streamu to umí rozbít prohlížeč.
  */
 
@@ -19,13 +19,70 @@ const presets = [
     uri: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
   },
   {
-    label: "Lokální soubor (samples/)",
-    uri: "file:///data/samples/sample.mp4",
+    label: "Lokální soubor (v image)",
+    uri: "file:///opt/rpy/assets/sample.mp4",
   },
 ];
 
 function $(id) {
   return document.getElementById(id);
+}
+
+let appAlertTimer = null;
+
+/** Normalizuje tělo chyby z FastAPI (`detail` string | objekt | pole) i přímé `{ code, message }`. */
+function formatApiError(j, res) {
+  if (!j || typeof j !== "object") return res.statusText || "Unknown error";
+  if (j.code && j.message) return `${j.code}: ${j.message}`;
+  const d = j.detail;
+  if (d && typeof d === "object" && !Array.isArray(d) && (d.message != null || d.code != null)) {
+    return [d.code, d.message].filter((x) => x != null && x !== "").join(" — ");
+  }
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join("; ");
+  return j.message || res.statusText;
+}
+
+/**
+ * Globální lišta (role=status). `level` null / prázdná zpráva = skrýt.
+ * @param {"error"|"warn"|"info"|""} level
+ * @param {number} autoDismissMs 0 = bez auto-úklidu
+ */
+function setAppAlert(level, message, autoDismissMs) {
+  const el = $("appAlert");
+  if (!el) return;
+  if (appAlertTimer) {
+    clearTimeout(appAlertTimer);
+    appAlertTimer = null;
+  }
+  if (!level || !message) {
+    el.hidden = true;
+    el.textContent = "";
+    el.className = "app-alert";
+    document.body.classList.remove("has-app-alert");
+    return;
+  }
+  el.hidden = false;
+  el.className = `app-alert app-alert--${level}`;
+  el.textContent = message;
+  document.body.classList.add("has-app-alert");
+  if (autoDismissMs > 0) {
+    appAlertTimer = setTimeout(() => {
+      setAppAlert("", "");
+    }, autoDismissMs);
+  }
+}
+
+async function fetchHealth() {
+  try {
+    const r = await fetch("/health");
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      setAppAlert("error", `Backend /health: ${formatApiError(j, r)}`, 0);
+    }
+  } catch (e) {
+    setAppAlert("error", `Backend /health: ${String(e)}`, 0);
+  }
 }
 
 function mjpegUrl() {
@@ -285,36 +342,42 @@ async function swapSource() {
       j = {};
     }
     if (!r.ok) {
-      const det = j.detail;
-      const msg =
-        typeof det === "string"
-          ? det
-          : Array.isArray(det)
-            ? det.map((x) => x.msg || JSON.stringify(x)).join("; ")
-            : det
-              ? JSON.stringify(det)
-              : raw || r.statusText;
+      const msg = formatApiError(j, r) || raw || r.statusText;
       $("swapState").textContent = ("HTTP " + r.status + ": " + msg).slice(0, 400);
+      setAppAlert("warn", `Zdroj: ${msg}`.slice(0, 500), 12000);
       return;
     }
     $("swapState").textContent = j.state || "OK";
     setTimeout(reloadMjpeg, 600);
   } catch (e) {
     $("swapState").textContent = String(e);
+    setAppAlert("error", `Zdroj: ${String(e)}`, 0);
   }
 }
 
 async function patchModel() {
   const c = parseFloat($("conf").value);
-  await fetch("/api/v1/model", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ confidence_threshold: c }),
-  });
+  try {
+    const r = await fetch("/api/v1/model", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confidence_threshold: c }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      setAppAlert("warn", `Model: ${formatApiError(j, r)}`, 10000);
+      return;
+    }
+    setAppAlert("info", "Prah confidence uložen.", 4500);
+  } catch (e) {
+    setAppAlert("error", `Model: ${String(e)}`, 0);
+  }
 }
 
 let wsBackoff = 1000;
 const WS_BACKOFF_MAX = 30000;
+/** Poslední pipeline chyba z WS — banner jen při změně textu, ne každých 250 ms. */
+let lastPipelineErrorBanner = "";
 
 function initWs() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -327,9 +390,22 @@ function initWs() {
   };
 
   ws.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch (err) {
+      setAppAlert("warn", `WS telemetrie: neplatný JSON (${String(err)})`, 8000);
+      return;
+    }
     const tel = msg.telemetry || {};
     const det = msg.detections || {};
+    if (msg._meta && msg._meta.redis_degraded && msg._meta.streak === 1) {
+      setAppAlert(
+        "warn",
+        "Telemetrie: dočasný výpadek Redis — data v UI mohou zaostávat.",
+        14000,
+      );
+    }
     window.__lastDetections = det;
     $("stateBadge").textContent = tel.pipeline_state || "—";
     drawBoxes(det);
@@ -360,6 +436,13 @@ function initWs() {
     }
     if (tel.last_error) {
       parts.push("chyba: " + String(tel.last_error).slice(0, 160));
+      const errStr = String(tel.last_error).slice(0, 280);
+      if (errStr !== lastPipelineErrorBanner) {
+        lastPipelineErrorBanner = errStr;
+        setAppAlert("warn", `Pipeline: ${errStr}`, 12000);
+      }
+    } else {
+      lastPipelineErrorBanner = "";
     }
     m.textContent = parts.join(" · ");
 
@@ -423,9 +506,30 @@ function initWs() {
   };
 }
 
+let eventsRedisWarned = false;
+
 async function loadEvents() {
-  const r = await fetch("/api/v1/events?count=20");
-  const j = await r.json();
+  let r;
+  let j = {};
+  try {
+    r = await fetch("/api/v1/events?count=20");
+    j = await r.json().catch(() => ({}));
+  } catch (e) {
+    setAppAlert("warn", `Události: ${String(e)}`, 8000);
+    return;
+  }
+  if (!r.ok) {
+    setAppAlert("warn", `Události: ${formatApiError(j, r)}`, 10000);
+    return;
+  }
+  if (j.error === "redis_failed" && !eventsRedisWarned) {
+    eventsRedisWarned = true;
+    setAppAlert(
+      "warn",
+      "Události: Redis nedostupný — seznam může být neúplný.",
+      12000,
+    );
+  }
   const log = $("log");
   log.innerHTML = "";
   (j.events || []).forEach((e) => {
@@ -579,10 +683,17 @@ async function saveRecordingPolicy(formRoot) {
       body: JSON.stringify(body),
     });
     const j = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(j.detail || res.statusText);
+    if (!res.ok) {
+      const msg = formatApiError(j, res);
+      st.textContent = msg;
+      setAppAlert("warn", `Politika záznamu: ${msg}`, 12000);
+      return;
+    }
     st.textContent = "Uloženo — ai_core obdrží přes Redis.";
+    setAppAlert("info", "Politika záznamu uložena.", 5000);
   } catch (e) {
     st.textContent = String(e);
+    setAppAlert("error", `Politika záznamu: ${String(e)}`, 0);
   }
 }
 
@@ -596,9 +707,26 @@ async function initRecording() {
     ]);
     const catalog = await catRes.json();
     const polJson = await polRes.json();
+    if (!catRes.ok) {
+      mount.textContent = `Katalog tříd nedostupný: ${formatApiError(catalog, catRes)}`;
+      setAppAlert("warn", `Katalog záznamu: ${formatApiError(catalog, catRes)}`, 0);
+      return;
+    }
     if (!polRes.ok) {
       mount.textContent = "Politika nedostupná (spusťte PostgreSQL a web).";
+      setAppAlert(
+        "warn",
+        `Politika: ${formatApiError(polJson, polRes)}`,
+        0,
+      );
       return;
+    }
+    if (polJson.source === "error") {
+      setAppAlert(
+        "warn",
+        `Politika záznamu: čtení z DB selhalo (${polJson.error_code || "?"}) — zobrazeny výchozí hodnoty.`,
+        0,
+      );
     }
     mount.innerHTML = "";
     renderRecordingUI(catalog, polJson.policy, mount);
@@ -625,6 +753,7 @@ function initViewToggle() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  fetchHealth();
   initSources();
   initViewToggle();
 

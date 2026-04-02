@@ -1,4 +1,15 @@
-"""Orchestrates GStreamer (or dummy ingest), inference, Redis, MJPEG, DB events."""
+"""
+ai_core: single process that ties together video ingest, inference, IPC, and optional DB writes.
+
+Threads / asyncio:
+- Main thread: GstVisionPipeline GLib loop or dummy loop; blocking `run()` tail.
+- asyncio: MJPEG aiohttp server (dedicated thread running asyncio.run).
+- Threads: Redis config subscriber, source poll, telemetry publisher, DB writer consumer.
+
+Failure modes:
+- GStreamer errors trigger recovery (see pipeline.gst_pipeline); telemetry exposes `last_error`.
+- DB disabled if `init_db()` fails or `DATABASE_URL` unset; events dropped with log.
+"""
 
 from __future__ import annotations
 
@@ -32,6 +43,11 @@ logger = logging.getLogger("ai_core")
 
 
 class CoreApp:
+    """
+    Loads config from YAML + env, wires Redis, optional Postgres, Hailo stub/real, and GStreamer.
+    Hot-swap source URI via Redis key `config:source` (set by web PATCH /api/v1/source).
+    """
+
     def __init__(self) -> None:
         self.cfg: AppConfig = load_app_config()
         setup_logging("ai_core")
