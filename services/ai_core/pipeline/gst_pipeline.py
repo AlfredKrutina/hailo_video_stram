@@ -327,11 +327,8 @@ class GstVisionPipeline:
                     )
         except Exception as e:
             logger.debug("ytdlp_stderr_reader_exc", extra={"extra_data": {"err": str(e)}})
-        finally:
-            try:
-                err.close()
-            except Exception:
-                pass
+        # Neuzavírat proc.stderr zde — uzavření read-endu za živého yt-dlp může při dalším zápisu
+        # na stderr dát child procesu SIGPIPE/EPIPE a shodit pipe do GStreameru (502 / prázdný MJPEG).
 
     def _kill_ytdlp_child(self) -> None:
         """Nejdřív ffmpeg (čte z yt-dlp), pak yt-dlp — uvolní se pipe."""
