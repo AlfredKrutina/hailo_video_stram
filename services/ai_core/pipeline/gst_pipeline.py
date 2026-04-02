@@ -469,15 +469,19 @@ class GstVisionPipeline:
         """
         Po EOS u konečného média znovu přehrát od začátku (seek), místo rebuild pipeline.
 
-        Platí pro file:// a běžné krátké HTTP(S) MP4 dema. RTSP / yt-dlp pipe necháváme
-        na recovery (živý stream nebo jiná sémantika EOS).
+        Pouze **file://** — lokální soubor podporuje seek bez HTTP Range.
+
+        U **http(s)://** seek na pipeline znovu aktivuje souphttpsrc s Range; servery bez
+        Range (samplelib + is-live sekvenční režim) pak hlásí „Server does not support
+        seeking“. Proto u HTTP(S) necháváme EOS na běžné recovery (nové uridecodebin).
+        RTSP / yt-dlp pipe také bez seek zde.
         """
         assert Gst is not None
         uri = (self._last_playback_uri or self._cfg.source.uri or "").strip()
         ul = uri.lower()
         if ul.startswith("rtsp://") or self._ingress_mode == "ytdlp_pipe":
             return False
-        if not (ul.startswith("file://") or ul.startswith("http://") or ul.startswith("https://")):
+        if not ul.startswith("file://"):
             return False
         if not self._pipeline:
             return False
