@@ -81,6 +81,10 @@ def _apply_browser_like_headers(source: Any) -> None:
     """
     Nastaví User-Agent a Referer na HTTP(S) zdroji (souphttpsrc / curlhttpsrc).
     Bez toho YouTube CDN a některé buckety vracejí 403 i při „platné“ URL z yt-dlp.
+
+    Pro souphttpsrc: **is-live=true** — některé servery (např. samplelib) neakceptují HTTP Range;
+    výchozí chování posílá Range kvůli seekům a spadne s gst-resource-error „Server does not
+    support seeking“. Sekvenční režim Range nepoužívá.
     """
     try:
         factory = source.get_factory()
@@ -101,6 +105,19 @@ def _apply_browser_like_headers(source: Any) -> None:
             break
         except Exception:
             continue
+    if "souphttp" in name:
+        try:
+            source.set_property("is-live", True)
+            # region agent log
+            agent_debug_log(
+                "H1",
+                "gst_pipeline.py:_apply_browser_like_headers",
+                "souphttpsrc_is_live_true",
+                {"element": name},
+            )
+            # endregion
+        except Exception as e:
+            logger.debug("souphttpsrc_is_live_skipped", extra={"extra_data": {"err": str(e)}})
     logger.debug("http_source_browser_headers", extra={"extra_data": {"element": name}})
 
 
