@@ -196,7 +196,12 @@ class CoreApp:
                 fps=fps,
                 soc_temp_c=read_soc_temp_c(),
                 hailo_temp_c=read_hailo_temp_c(),
-                camera_connected=self._pipeline_state == PipelineState.RUNNING,
+                camera_connected=self._pipeline_state
+                in (
+                    PipelineState.RUNNING,
+                    PipelineState.RECOVERING,
+                    PipelineState.RECONFIGURING,
+                ),
                 last_error=self._last_error,
                 extra=extra,
             )

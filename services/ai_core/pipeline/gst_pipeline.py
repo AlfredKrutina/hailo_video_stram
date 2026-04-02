@@ -182,6 +182,20 @@ def _ytdlp_stderr_to_log() -> bool:
     return os.environ.get("ENVIRONMENT", "").lower() == "staging"
 
 
+def _ffmpeg_stderr_to_log() -> bool:
+    """Stejná konvence jako yt-dlp pro ffmpeg remux větev; RPY_FFMPEG_LOG_STDERR=0 vypne."""
+    ex = os.environ.get("RPY_FFMPEG_LOG_STDERR", "").strip().lower()
+    if ex in ("0", "false", "no"):
+        return False
+    if ex in ("1", "true", "yes"):
+        return True
+    return os.environ.get("ENVIRONMENT", "").lower() == "staging"
+
+
+def _ingress_is_ytdlp_pipe(mode: str | None) -> bool:
+    return bool(mode and str(mode).startswith("ytdlp_pipe"))
+
+
 class GstVisionPipeline:
     def __init__(
         self,
@@ -217,12 +231,16 @@ class GstVisionPipeline:
         self._ytdlp_proc: subprocess.Popen | None = None
         self._ytdlp_stderr_thread: threading.Thread | None = None
         self._ytdlp_stderr_tail: deque[str] = deque(maxlen=120)
+        self._ffmpeg_stderr_thread: threading.Thread | None = None
+        self._ffmpeg_stderr_tail: deque[str] = deque(maxlen=120)
         self._forbidden_streak: int = 0
 
     def get_diagnostics(self) -> dict[str, Any]:
         extra: dict[str, Any] = {}
         if _ytdlp_stderr_to_log() and self._ytdlp_stderr_tail:
             extra["ytdlp_stderr_tail"] = list(self._ytdlp_stderr_tail)[-30:]
+        if _ffmpeg_stderr_to_log() and self._ffmpeg_stderr_tail:
+            extra["ffmpeg_stderr_tail"] = list(self._ffmpeg_stderr_tail)[-30:]
         return {
             "configured_uri": sanitize_uri(self._cfg.source.uri),
             "playback_uri": sanitize_uri(self._last_playback_uri or self._cfg.source.uri),
@@ -330,10 +348,34 @@ class GstVisionPipeline:
         # Neuzavírat proc.stderr zde — uzavření read-endu za živého yt-dlp může při dalším zápisu
         # na stderr dát child procesu SIGPIPE/EPIPE a shodit pipe do GStreameru (502 / prázdný MJPEG).
 
+    def _drain_ffmpeg_stderr(self, proc: subprocess.Popen) -> None:
+        err = proc.stderr
+        if err is None:
+            return
+        try:
+            for line in iter(err.readline, b""):
+                if not line:
+                    if proc.poll() is not None:
+                        break
+                    continue
+                text = line.decode("utf-8", errors="replace").rstrip("\n\r")
+                if not text:
+                    continue
+                self._ffmpeg_stderr_tail.append(text)
+                if _ffmpeg_stderr_to_log():
+                    logger.info(
+                        "ffmpeg_stderr",
+                        extra={"extra_data": {"line": text[:2000]}},
+                    )
+        except Exception as e:
+            logger.debug("ffmpeg_stderr_reader_exc", extra={"extra_data": {"err": str(e)}})
+
     def _kill_ytdlp_child(self) -> None:
         """Nejdřív ffmpeg (čte z yt-dlp), pak yt-dlp — uvolní se pipe."""
         thr = self._ytdlp_stderr_thread
         self._ytdlp_stderr_thread = None
+        ff_thr = self._ffmpeg_stderr_thread
+        self._ffmpeg_stderr_thread = None
         ff = self._ffmpeg_remux_proc
         yp = self._ytdlp_proc
         self._ffmpeg_remux_proc = None
@@ -349,6 +391,8 @@ class GstVisionPipeline:
                     proc.kill()
                 except Exception:
                     pass
+        if ff_thr is not None and ff_thr.is_alive():
+            ff_thr.join(timeout=2.0)
         if thr is not None and thr.is_alive():
             thr.join(timeout=2.0)
 
@@ -529,12 +573,13 @@ class GstVisionPipeline:
                         "mpegts",
                         "-",
                     ]
+                    ff_stderr = subprocess.PIPE if _ffmpeg_stderr_to_log() else subprocess.DEVNULL
                     try:
                         ffp = subprocess.Popen(
                             ff_cmd,
                             stdin=yp.stdout,
                             stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL,
+                            stderr=ff_stderr,
                             bufsize=0,
                         )
                     except OSError:
@@ -551,6 +596,14 @@ class GstVisionPipeline:
                     self._ytdlp_proc = yp
                     self._ffmpeg_remux_proc = ffp
                     assert ffp.stdout is not None
+                    if ff_stderr == subprocess.PIPE and ffp.stderr is not None:
+                        self._ffmpeg_stderr_thread = threading.Thread(
+                            target=self._drain_ffmpeg_stderr,
+                            args=(ffp,),
+                            daemon=True,
+                            name="ffmpeg-stderr",
+                        )
+                        self._ffmpeg_stderr_thread.start()
                     fd = ffp.stdout.fileno()
                 else:
                     self._ffmpeg_remux_proc = None
@@ -713,7 +766,7 @@ class GstVisionPipeline:
         assert Gst is not None
         uri = (self._last_playback_uri or self._cfg.source.uri or "").strip()
         ul = uri.lower()
-        if ul.startswith("rtsp://") or self._ingress_mode == "ytdlp_pipe":
+        if ul.startswith("rtsp://") or _ingress_is_ytdlp_pipe(self._ingress_mode):
             return False
         if not ul.startswith("file://"):
             return False
@@ -784,10 +837,15 @@ class GstVisionPipeline:
             # endregion
             self._last_gst_error = str(err)
             logger.error("gst_error", extra={"extra_data": {"err": str(err), "dbg": dbg}})
-            if self._ingress_mode == "ytdlp_pipe" and self._ytdlp_stderr_tail:
+            if _ingress_is_ytdlp_pipe(self._ingress_mode) and self._ytdlp_stderr_tail:
                 logger.error(
                     "gst_error_ytdlp_stderr_tail",
                     extra={"extra_data": {"tail": list(self._ytdlp_stderr_tail)[-20:]}},
+                )
+            if _ingress_is_ytdlp_pipe(self._ingress_mode) and self._ffmpeg_stderr_tail:
+                logger.error(
+                    "gst_error_ffmpeg_stderr_tail",
+                    extra={"extra_data": {"tail": list(self._ffmpeg_stderr_tail)[-20:]}},
                 )
             self._controller.transition(PipelineState.PAUSED)
             detail = f"{err}" + (f" | {dbg}" if dbg else "")
@@ -889,6 +947,13 @@ class GstVisionPipeline:
         self._on_jpeg(data)
         return Gst.FlowReturn.OK
 
+    def _recover_sleep(self, seconds: float) -> bool:
+        """
+        Počká max `seconds` s; probudí se hned po stop()/přepnutí zdroje.
+        Vrací True, pokud má recovery skončit (příznak stop).
+        """
+        return self._recover_stop.wait(timeout=max(0.0, float(seconds)))
+
     def _start_recovery(self, reason: str) -> None:
         if self._recover_thread and self._recover_thread.is_alive():
             return
@@ -908,25 +973,35 @@ class GstVisionPipeline:
         # 1.5 s + 3 s backoff před každým rebuildem způsobovala dlouhé „odpojení“ a cykly
         # chyb v UI; u čistého EOS znovu otevřeme zdroj téměř hned (bez Range seeku).
         if reason == "EOS" and (ul0.startswith("http://") or ul0.startswith("https://")):
-            time.sleep(0.12)
+            if self._recover_sleep(0.12):
+                logger.info("recovery_stopped")
+                return
             if not self._recover_stop.is_set():
                 self._controller.transition(PipelineState.RUNNING)
                 self._on_state(PipelineState.RECOVERING, None)
-                time.sleep(0.05)
+                if self._recover_sleep(0.05):
+                    logger.info("recovery_stopped")
+                    return
                 self._rebuild()
             return
 
         # RTSP EOS (výpadek / odpojení): stejně jako HTTP rychlý rebuild místo 1.5 s + backoff.
         if reason == "EOS" and ul0.startswith("rtsp://"):
-            time.sleep(0.12)
+            if self._recover_sleep(0.12):
+                logger.info("recovery_stopped")
+                return
             if not self._recover_stop.is_set():
                 self._controller.transition(PipelineState.RUNNING)
                 self._on_state(PipelineState.RECOVERING, None)
-                time.sleep(0.05)
+                if self._recover_sleep(0.05):
+                    logger.info("recovery_stopped")
+                    return
                 self._rebuild()
             return
 
-        time.sleep(1.5)
+        if self._recover_sleep(1.5):
+            logger.info("recovery_stopped")
+            return
         backoff = 3.0
         while not self._recover_stop.is_set():
             uri = self._cfg.source.uri
@@ -935,19 +1010,31 @@ class GstVisionPipeline:
                     "rtsp_probe_backoff",
                     extra={"extra_data": {"uri": sanitize_uri(uri), "sleep_s": min(backoff, 30.0)}},
                 )
-                time.sleep(min(backoff, 30.0))
+                if self._recover_sleep(min(backoff, 30.0)):
+                    logger.info("recovery_stopped")
+                    return
                 backoff = min(backoff * 1.45, 30.0)
                 continue
-            time.sleep(min(backoff, 25.0))
+            if self._recover_sleep(min(backoff, 25.0)):
+                logger.info("recovery_stopped")
+                return
             backoff = min(backoff * 1.2, 30.0)
+            if self._recover_stop.is_set():
+                logger.info("recovery_stopped")
+                return
             self._controller.transition(PipelineState.RUNNING)
             self._on_state(PipelineState.RECOVERING, None)
-            time.sleep(0.2)
+            if self._recover_sleep(0.2):
+                logger.info("recovery_stopped")
+                return
             self._rebuild()
             return
         logger.info("recovery_stopped")
 
     def _rebuild(self) -> None:
+        if self._recover_stop.is_set():
+            logger.debug("rebuild_skipped_stop")
+            return
         if self._main_loop:
             self._main_loop.quit()
         self._thread = None
@@ -958,6 +1045,11 @@ class GstVisionPipeline:
     def stop(self) -> None:
         self._recover_stop.set()
         self._kill_ytdlp_child()
+        rt = self._recover_thread
+        if rt is not None and rt.is_alive():
+            rt.join(timeout=12.0)
+        if rt is None or not rt.is_alive():
+            self._recover_stop.clear()
         if self._main_loop:
             self._main_loop.quit()
         if self._pipeline and _GST_AVAILABLE:
