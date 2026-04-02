@@ -486,6 +486,8 @@ const streamState = {
   staleTimer: null,
   STALE_MS: 8000,
   _staleLogged: false,
+  /** Po img error auto-reload (multipart často nedá druhý load po obnově streamu). */
+  _mjpegErrorRetries: 0,
 };
 
 function setStreamPill(state, text) {
@@ -518,6 +520,7 @@ function attachMjpegHandlers(img) {
   img.addEventListener("load", () => {
     streamState.lastLoadAt = Date.now();
     streamState._staleLogged = false;
+    streamState._mjpegErrorRetries = 0;
     setStreamPill("live", "MJPEG · živě");
     showStreamError(false);
     layoutOverlay();
@@ -534,6 +537,10 @@ function attachMjpegHandlers(img) {
     });
     setStreamPill("dead", "MJPEG · chyba");
     showStreamError(true);
+    if (streamState._mjpegErrorRetries < 4) {
+      streamState._mjpegErrorRetries += 1;
+      setTimeout(() => reloadMjpeg(), 700);
+    }
   });
 }
 
@@ -542,7 +549,6 @@ function startStreamStaleWatch() {
   streamState.staleTimer = setInterval(() => {
     const img = $("mjpeg");
     if (!img || !img.src) return;
-    if ($("streamFallback") && !$("streamFallback").hidden) return;
     const now = Date.now();
     if (!streamState.lastLoadAt) {
       if (img.complete === false && now - (streamState._startedAt || now) > 12000) {
@@ -601,7 +607,10 @@ async function swapSource() {
       return;
     }
     $("swapState").textContent = j.state || "OK";
-    setTimeout(reloadMjpeg, 600);
+    setTimeout(() => {
+      streamState._mjpegErrorRetries = 0;
+      reloadMjpeg();
+    }, 600);
   } catch (e) {
     $("swapState").textContent = String(e);
     setAppAlert("error", `Zdroj: ${String(e)}`, 0);
@@ -1020,8 +1029,14 @@ window.addEventListener("DOMContentLoaded", () => {
   img.src = mjpegUrl();
   startStreamStaleWatch();
 
-  $("btnReloadStream")?.addEventListener("click", reloadMjpeg);
-  $("btnRetryStream")?.addEventListener("click", reloadMjpeg);
+  $("btnReloadStream")?.addEventListener("click", () => {
+    streamState._mjpegErrorRetries = 0;
+    reloadMjpeg();
+  });
+  $("btnRetryStream")?.addEventListener("click", () => {
+    streamState._mjpegErrorRetries = 0;
+    reloadMjpeg();
+  });
 
   $("btnFs")?.addEventListener("click", () => {
     const w = $("videoWrap");
