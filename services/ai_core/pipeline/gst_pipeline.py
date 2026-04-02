@@ -663,6 +663,20 @@ class GstVisionPipeline:
             "recovery_started",
             extra={"extra_data": {"reason": reason[:500], "cycle": self._recovery_cycles}},
         )
+        uri0 = self._cfg.source.uri.strip()
+        ul0 = uri0.lower()
+        # Krátké HTTP(S) MP4 (samplelib …) skončí EOS každých pár sekund. Původní prodleva
+        # 1.5 s + 3 s backoff před každým rebuildem způsobovala dlouhé „odpojení“ a cykly
+        # chyb v UI; u čistého EOS znovu otevřeme zdroj téměř hned (bez Range seeku).
+        if reason == "EOS" and (ul0.startswith("http://") or ul0.startswith("https://")):
+            time.sleep(0.12)
+            if not self._recover_stop.is_set():
+                self._controller.transition(PipelineState.RUNNING)
+                self._on_state(PipelineState.RECOVERING, None)
+                time.sleep(0.05)
+                self._rebuild()
+            return
+
         time.sleep(1.5)
         backoff = 3.0
         while not self._recover_stop.is_set():

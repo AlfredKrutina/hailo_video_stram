@@ -180,7 +180,15 @@ async function measureMjpegBrowserTtfb(timeoutMs = 5000) {
     clearTimeout(timer);
     await reader.cancel().catch(() => {});
     const ms = Math.round(performance.now() - t0);
-    const bytes = first.value?.byteLength ?? 0;
+    const v = first.value;
+    const bytes =
+      v == null
+        ? 0
+        : typeof v.byteLength === "number"
+          ? v.byteLength
+          : typeof v.length === "number"
+            ? v.length
+            : 0;
     if (first.done && bytes === 0) {
       return {
         id: "mjpeg_browser_ttfb",
@@ -192,7 +200,7 @@ async function measureMjpegBrowserTtfb(timeoutMs = 5000) {
       };
     }
     const ok = bytes > 0;
-    _agentLog("H2", "app.js:measureMjpegBrowserTtfb", "ttfb_ok_chunk", { ms, bytes, ok });
+    _agentLog("H2", "app.js:measureMjpegBrowserTtfb", "ttfb_ok_chunk", { ms, bytes, ok, done: first.done });
     return {
       id: "mjpeg_browser_ttfb",
       severity: ok ? "ok" : "warn",
