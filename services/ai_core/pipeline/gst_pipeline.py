@@ -1,8 +1,9 @@
-"""GStreamer ingest: uridecodebin → RGB → tee → appsink (infer) + jpeg appsink (MJPEG)."""
+"""GStreamer ingest: uridecodebin or playbin(RTSP video-only) → RGB → tee → appsink + MJPEG."""
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -43,6 +44,18 @@ def gst_init() -> bool:
     return True
 
 
+# playbin: pouze video — bez audio větve (kamery často posílají G.711/PCM, které rozbijí decodebin)
+_GST_PLAY_FLAG_VIDEO = 1
+
+
+def _rtsp_use_playbin_video_only() -> bool:
+    return os.environ.get("RPY_RTSP_USE_URIDECODEBIN", "").lower() not in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 class GstVisionPipeline:
     def __init__(
         self,
@@ -73,6 +86,7 @@ class GstVisionPipeline:
         self._last_resolution_error: str | None = None
         self._last_gst_error: str | None = None
         self._recovery_cycles = 0
+        self._rtsp_mode: str | None = None
 
     def get_diagnostics(self) -> dict[str, Any]:
         return {
@@ -81,40 +95,14 @@ class GstVisionPipeline:
             "resolution_error": self._last_resolution_error,
             "last_gst_error": self._last_gst_error,
             "recovery_cycles": self._recovery_cycles,
+            "rtsp_mode": self._rtsp_mode,
         }
 
-    def start(self) -> bool:
-        if not _GST_AVAILABLE or not gst_init():
-            self._on_state(PipelineState.FAILED, "GStreamer unavailable")
-            return False
-        self._controller.transition(PipelineState.RECOVERING)
-        self._build_and_run()
-        return True
-
-    def _build_and_run(self) -> None:
+    def _create_vsink_bin(self) -> tuple[Any, Any, Any]:
+        """Bin: queue → RGB tee → (appsink infer + jpeg). Vrací (vsink_bin, asink, jsink)."""
         assert Gst is not None
-        resolved, rerr = resolve_playback_uri(self._cfg.source.uri)
-        self._last_resolution_error = rerr
-        self._last_playback_uri = resolved if not rerr else None
-        if rerr:
-            logger.error(
-                "playback_resolve_failed",
-                extra={"extra_data": {"err": rerr, "uri": sanitize_uri(self._cfg.source.uri)}},
-            )
-            self._last_gst_error = None
-            self._on_state(PipelineState.RECOVERING, rerr)
-            self._start_recovery(f"resolve:{rerr}")
-            return
-
-        self._pipeline = Gst.Pipeline.new("vision")
-        decode = Gst.ElementFactory.make("uridecodebin", "decode")
-        if decode is None:
-            self._on_state(PipelineState.FAILED, "uridecodebin missing")
-            return
-        decode.set_property("uri", resolved)
-        self._pipeline.add(decode)
-
-        q1 = Gst.ElementFactory.make("queue", "q1")
+        vsink_bin = Gst.Bin.new("vsink")
+        q1 = Gst.ElementFactory.make("queue", "vq1")
         q1.set_property("max-size-buffers", 2)
         conv = Gst.ElementFactory.make("videoconvert", "conv")
         caps = Gst.ElementFactory.make("capsfilter", "caps")
@@ -133,6 +121,7 @@ class GstVisionPipeline:
         asink.set_property("drop", True)
 
         q3 = Gst.ElementFactory.make("queue", "q3")
+        q3.set_property("max-size-buffers", 2)
         jconv = Gst.ElementFactory.make("videoconvert", "jconv")
         jenc = Gst.ElementFactory.make("jpegenc", "jenc")
         jsink = Gst.ElementFactory.make("appsink", "jsink")
@@ -143,33 +132,11 @@ class GstVisionPipeline:
 
         for el in (q1, conv, caps, tee, q2, asink, q3, jconv, jenc, jsink):
             if el is None:
-                self._on_state(PipelineState.FAILED, "missing GStreamer element")
-                return
-            self._pipeline.add(el)
+                raise RuntimeError("missing GStreamer element in vsink bin")
+            vsink_bin.add(el)
 
-        _linked = {"done": False}
-
-        def on_pad_added(_dbin: Any, pad: Any) -> None:
-            if _linked["done"]:
-                return
-            caps_p = pad.get_current_caps()
-            struct = caps_p.get_structure() if caps_p else None
-            name = struct.get_name() if struct else ""
-            if not name.startswith("video"):
-                return
-            sinkpad = q1.get_static_pad("sink")
-            if sinkpad and not pad.is_linked():
-                pad.link(sinkpad)
-                _linked["done"] = True
-
-        decode.connect("pad-added", on_pad_added)
-
-        if not q1.link(conv):
-            pass
-        if not conv.link(caps):
-            pass
-        if not caps.link(tee):
-            pass
+        if not q1.link(conv) or not conv.link(caps) or not caps.link(tee):
+            raise RuntimeError("vsink bin link failed (tee)")
 
         def _request_tee_pad(t: Any) -> Any:
             if hasattr(t, "request_pad_simple"):
@@ -190,13 +157,24 @@ class GstVisionPipeline:
         jconv.link(jenc)
         jenc.link(jsink)
 
+        q1_sink = q1.get_static_pad("sink")
+        ghost = Gst.GhostPad.new("sink", q1_sink)
+        ghost.set_active(True)
+        vsink_bin.add_pad(ghost)
+
+        return vsink_bin, asink, jsink
+
+    def _wire_decode_bus_and_play(
+        self,
+        asink: Any,
+        jsink: Any,
+    ) -> None:
+        assert Gst is not None
         bus = self._pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message", self._on_bus_message)
-
         asink.connect("new-sample", self._on_new_sample)
         jsink.connect("new-sample", self._on_jpeg_sample)
-
         self._main_loop = GLib.MainLoop()
         self._thread = threading.Thread(target=self._main_loop.run, daemon=True)
         self._controller.force(PipelineState.RUNNING)
@@ -206,6 +184,95 @@ class GstVisionPipeline:
             self._on_state(PipelineState.FAILED, "PLAYING failed")
             return
         self._thread.start()
+
+    def start(self) -> bool:
+        if not _GST_AVAILABLE or not gst_init():
+            self._on_state(PipelineState.FAILED, "GStreamer unavailable")
+            return False
+        self._controller.transition(PipelineState.RECOVERING)
+        self._build_and_run()
+        return True
+
+    def _build_and_run(self) -> None:
+        assert Gst is not None
+        resolved, rerr = resolve_playback_uri(self._cfg.source.uri)
+        self._last_resolution_error = rerr
+        self._last_playback_uri = resolved if not rerr else None
+        self._rtsp_mode = None
+        if rerr:
+            logger.error(
+                "playback_resolve_failed",
+                extra={"extra_data": {"err": rerr, "uri": sanitize_uri(self._cfg.source.uri)}},
+            )
+            self._last_gst_error = None
+            self._on_state(PipelineState.RECOVERING, rerr)
+            self._start_recovery(f"resolve:{rerr}")
+            return
+
+        self._pipeline = Gst.Pipeline.new("vision")
+        try:
+            vsink_bin, asink, jsink = self._create_vsink_bin()
+        except RuntimeError as e:
+            self._on_state(PipelineState.FAILED, str(e))
+            return
+
+        use_rtsp_playbin = (
+            resolved.lower().startswith("rtsp://")
+            and _rtsp_use_playbin_video_only()
+        )
+
+        if use_rtsp_playbin:
+            playbin = Gst.ElementFactory.make("playbin", "play")
+            if playbin is None:
+                self._on_state(PipelineState.FAILED, "playbin missing")
+                return
+            playbin.set_property("uri", resolved)
+            playbin.set_property("flags", _GST_PLAY_FLAG_VIDEO)
+            playbin.set_property("video-sink", vsink_bin)
+            self._pipeline.add(playbin)
+            self._pipeline.add(vsink_bin)
+            self._rtsp_mode = "playbin_video_only"
+            logger.info(
+                "rtsp_pipeline",
+                extra={
+                    "extra_data": {
+                        "mode": self._rtsp_mode,
+                        "hint": "bez audio stopy — kamery často posílají kodek, který decodebin nezvládne",
+                    },
+                },
+            )
+        else:
+            decode = Gst.ElementFactory.make("uridecodebin", "decode")
+            if decode is None:
+                self._on_state(PipelineState.FAILED, "uridecodebin missing")
+                return
+            decode.set_property("uri", resolved)
+            self._pipeline.add(decode)
+            self._pipeline.add(vsink_bin)
+            self._rtsp_mode = (
+                "uridecodebin_forced"
+                if resolved.lower().startswith("rtsp://")
+                else "uridecodebin"
+            )
+
+            bin_sink = vsink_bin.get_static_pad("sink")
+            _linked = {"done": False}
+
+            def on_pad_added(_dbin: Any, pad: Any) -> None:
+                if _linked["done"] or bin_sink is None:
+                    return
+                caps_p = pad.get_current_caps()
+                struct = caps_p.get_structure() if caps_p else None
+                name = struct.get_name() if struct else ""
+                if not name.startswith("video"):
+                    return
+                if not pad.is_linked():
+                    pad.link(bin_sink)
+                    _linked["done"] = True
+
+            decode.connect("pad-added", on_pad_added)
+
+        self._wire_decode_bus_and_play(asink, jsink)
 
     def _on_bus_message(self, bus: Any, message: Any) -> None:
         assert Gst is not None

@@ -379,6 +379,9 @@ function initWs() {
       if (ex.playback_uri && ex.playback_uri !== ex.configured_uri) {
         lines.push("Přehrávání: " + ex.playback_uri);
       }
+      if (ex.rtsp_mode) {
+        lines.push("RTSP pipeline: " + ex.rtsp_mode);
+      }
       if (lines.length) {
         diag.hidden = false;
         diag.textContent = [...new Set(lines)].join("\n");
