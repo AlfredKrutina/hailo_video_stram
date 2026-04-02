@@ -35,12 +35,13 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-staging}
       REDIS_URL: redis://redis:6379/0
       RPY_CONFIG: /app/config/default.yaml
-      SOURCE_URI: ${SOURCE_URI:-rtsp://127.0.0.1:8554/stream}
+      SOURCE_URI: ${SOURCE_URI:-https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4}
       USE_HAILO: ${USE_HAILO:-1}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rpy:rpy@postgres:5432/rpy}
     volumes:
       - ../config:/app/config:ro
       - snapshots:/data/snapshots
+      - ../samples:/data/samples:ro
     depends_on:
       redis:
         condition: service_healthy

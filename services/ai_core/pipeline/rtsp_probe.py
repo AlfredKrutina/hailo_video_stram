@@ -29,8 +29,13 @@ def rtsp_describe_ok(uri: str, timeout_s: float = 3.0) -> bool:
             sock.settimeout(timeout_s)
             sock.sendall(req)
             buf = sock.recv(4096)
-        if b"RTSP/1.0 200" in buf or b"RTSP/1.1 200" in buf:
-            return True
+        if not buf:
+            return False
+        # DESCRIBE without Authorization often gets 401; GStreamer still connects using userinfo in the URI.
+        if buf.startswith(b"RTSP/1."):
+            first = buf.split(b"\r\n", 1)[0].decode("utf-8", errors="replace")
+            if " 200 " in first or " 401 " in first or " 407 " in first:
+                return True
         logger.debug("rtsp_describe_non_200", extra={"extra_data": {"sample": buf[:200]}})
         return False
     except OSError as e:

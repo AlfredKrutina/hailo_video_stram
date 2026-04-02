@@ -13,6 +13,7 @@ import numpy as np
 from shared.schemas.config import AppConfig, ModelConfig
 from shared.schemas.telemetry import PipelineState
 
+from services.ai_core.source_resolve import resolve_playback_uri, sanitize_uri
 from services.ai_core.pipeline.rtsp_probe import rtsp_describe_ok
 from services.ai_core.pipeline.state import PipelineController
 
@@ -68,6 +69,19 @@ class GstVisionPipeline:
         self._recover_thread: threading.Thread | None = None
         self._width = 640
         self._height = 480
+        self._last_playback_uri: str | None = None
+        self._last_resolution_error: str | None = None
+        self._last_gst_error: str | None = None
+        self._recovery_cycles = 0
+
+    def get_diagnostics(self) -> dict[str, Any]:
+        return {
+            "configured_uri": sanitize_uri(self._cfg.source.uri),
+            "playback_uri": sanitize_uri(self._last_playback_uri or self._cfg.source.uri),
+            "resolution_error": self._last_resolution_error,
+            "last_gst_error": self._last_gst_error,
+            "recovery_cycles": self._recovery_cycles,
+        }
 
     def start(self) -> bool:
         if not _GST_AVAILABLE or not gst_init():
@@ -79,12 +93,25 @@ class GstVisionPipeline:
 
     def _build_and_run(self) -> None:
         assert Gst is not None
+        resolved, rerr = resolve_playback_uri(self._cfg.source.uri)
+        self._last_resolution_error = rerr
+        self._last_playback_uri = resolved if not rerr else None
+        if rerr:
+            logger.error(
+                "playback_resolve_failed",
+                extra={"extra_data": {"err": rerr, "uri": sanitize_uri(self._cfg.source.uri)}},
+            )
+            self._last_gst_error = None
+            self._on_state(PipelineState.RECOVERING, rerr)
+            self._start_recovery(f"resolve:{rerr}")
+            return
+
         self._pipeline = Gst.Pipeline.new("vision")
         decode = Gst.ElementFactory.make("uridecodebin", "decode")
         if decode is None:
             self._on_state(PipelineState.FAILED, "uridecodebin missing")
             return
-        decode.set_property("uri", self._cfg.source.uri)
+        decode.set_property("uri", resolved)
         self._pipeline.add(decode)
 
         q1 = Gst.ElementFactory.make("queue", "q1")
@@ -185,15 +212,18 @@ class GstVisionPipeline:
         t = message.type
         if t == Gst.MessageType.ERROR:
             err, dbg = message.parse_error()
+            self._last_gst_error = str(err)
             logger.error("gst_error", extra={"extra_data": {"err": str(err), "dbg": dbg}})
             self._controller.transition(PipelineState.PAUSED)
-            self._on_state(PipelineState.RECOVERING, str(err))
+            detail = f"{err}" + (f" | {dbg}" if dbg else "")
+            self._on_state(PipelineState.RECOVERING, detail[:1200])
             self._pipeline.set_state(Gst.State.NULL)
             self._start_recovery(str(err))
         elif t == Gst.MessageType.EOS:
             logger.warning("gst_eos")
+            self._last_gst_error = "EOS (konec streamu nebo odpojení)"
             self._controller.transition(PipelineState.PAUSED)
-            self._on_state(PipelineState.RECOVERING, "EOS")
+            self._on_state(PipelineState.RECOVERING, self._last_gst_error)
             self._pipeline.set_state(Gst.State.NULL)
             self._start_recovery("EOS")
         elif t == Gst.MessageType.WARNING:
@@ -253,19 +283,30 @@ class GstVisionPipeline:
     def _start_recovery(self, reason: str) -> None:
         if self._recover_thread and self._recover_thread.is_alive():
             return
+        self._recovery_cycles += 1
         self._recover_stop.clear()
         self._recover_thread = threading.Thread(target=self._recovery_loop, args=(reason,), daemon=True)
         self._recover_thread.start()
 
     def _recovery_loop(self, reason: str) -> None:
-        logger.info("recovery_started", extra={"extra_data": {"reason": reason}})
-        backoff = 1.0
+        logger.info(
+            "recovery_started",
+            extra={"extra_data": {"reason": reason[:500], "cycle": self._recovery_cycles}},
+        )
+        time.sleep(1.5)
+        backoff = 3.0
         while not self._recover_stop.is_set():
             uri = self._cfg.source.uri
             if uri.lower().startswith("rtsp://") and not rtsp_describe_ok(uri):
+                logger.warning(
+                    "rtsp_probe_backoff",
+                    extra={"extra_data": {"uri": sanitize_uri(uri), "sleep_s": min(backoff, 30.0)}},
+                )
                 time.sleep(min(backoff, 30.0))
-                backoff = min(backoff * 1.5, 30.0)
+                backoff = min(backoff * 1.45, 30.0)
                 continue
+            time.sleep(min(backoff, 25.0))
+            backoff = min(backoff * 1.2, 30.0)
             self._controller.transition(PipelineState.RUNNING)
             self._on_state(PipelineState.RECOVERING, None)
             time.sleep(0.2)

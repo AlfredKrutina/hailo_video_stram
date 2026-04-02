@@ -25,7 +25,7 @@
       <p class="hint">Co se ukládá do databáze: typy objektů, volitelné atributy (jen pokud je model dodá), snímky, limity.</p>
       <div id="recordingPanel" class="recording-panel"></div>
       <div class="section-title">Zobrazení</div>
-      <p class="hint">Jeden MJPEG proud z backendu; AI běží na stejném časové ose (žádný druhý enkodér). Režim níže jen přepíná UI / budoucí druhý endpoint.</p>
+      <p class="hint">Jeden MJPEG proud z backendu; AI běží na stejném časové ose. YouTube vyžaduje yt-dlp v image; lokální soubor musí být v kontejneru (viz složka samples).</p>
       <div class="seg" role="group" aria-label="Režim náhledu">
         <button type="button" class="seg-btn active" data-view="main" id="viewMain">Hlavní náhled</button>
         <button type="button" class="seg-btn" data-view="ai" id="viewAi">AI / substream</button>
@@ -49,6 +49,7 @@
         </div>
         <div class="badge" id="stateBadge">…</div>
       </div>
+      <div class="diag-strip" id="pipelineDiagnostics" hidden></div>
       <div class="telemetry">
         <canvas id="chLat" height="80" aria-label="Latence inference"></canvas>
         <canvas id="chFps" height="80" aria-label="FPS"></canvas>

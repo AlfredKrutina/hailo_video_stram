@@ -6,11 +6,21 @@
 const MJPEG_PATH = "/mjpeg/stream.mjpeg";
 
 const presets = [
-  { label: "Ajax (výchozí)", uri: "rtsp://127.0.0.1:8554/stream" },
-  { label: "Lokální soubor", uri: "file:///data/sample.mp4" },
   {
-    label: "YouTube (ukázka)",
+    label: "Demo · HTTP MP4 (Big Buck Bunny)",
+    uri: "https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+  },
+  {
+    label: "RTSP (vlastní kamera)",
+    uri: "rtsp://user:pass@192.168.1.33:8554/stream",
+  },
+  {
+    label: "YouTube (yt-dlp v kontejneru)",
     uri: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  },
+  {
+    label: "Lokální soubor (samples/)",
+    uri: "file:///data/samples/sample.mp4",
   },
 ];
 
@@ -267,7 +277,26 @@ async function swapSource() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ uri, label: "hot-swap" }),
     });
-    const j = await r.json();
+    const raw = await r.text();
+    let j = {};
+    try {
+      j = JSON.parse(raw);
+    } catch {
+      j = {};
+    }
+    if (!r.ok) {
+      const det = j.detail;
+      const msg =
+        typeof det === "string"
+          ? det
+          : Array.isArray(det)
+            ? det.map((x) => x.msg || JSON.stringify(x)).join("; ")
+            : det
+              ? JSON.stringify(det)
+              : raw || r.statusText;
+      $("swapState").textContent = ("HTTP " + r.status + ": " + msg).slice(0, 400);
+      return;
+    }
     $("swapState").textContent = j.state || "OK";
     setTimeout(reloadMjpeg, 600);
   } catch (e) {
@@ -329,7 +358,35 @@ function initWs() {
     if (tel.camera_connected === false) {
       parts.push("kamera: offline");
     }
+    if (tel.last_error) {
+      parts.push("chyba: " + String(tel.last_error).slice(0, 160));
+    }
     m.textContent = parts.join(" · ");
+
+    const diag = $("pipelineDiagnostics");
+    if (diag) {
+      const lines = [];
+      if (tel.last_error) lines.push(String(tel.last_error));
+      const ex = tel.extra || {};
+      if (ex.resolution_error) lines.push("Zdroj: " + ex.resolution_error);
+      if (ex.last_gst_error && String(ex.last_gst_error) !== String(tel.last_error)) {
+        lines.push("GStreamer: " + ex.last_gst_error);
+      }
+      if (ex.recovery_cycles > 0) {
+        lines.push("Obnovení pipeline: " + ex.recovery_cycles);
+      }
+      if (ex.configured_uri) lines.push("Nastaveno: " + ex.configured_uri);
+      if (ex.playback_uri && ex.playback_uri !== ex.configured_uri) {
+        lines.push("Přehrávání: " + ex.playback_uri);
+      }
+      if (lines.length) {
+        diag.hidden = false;
+        diag.textContent = [...new Set(lines)].join("\n");
+      } else {
+        diag.hidden = true;
+        diag.textContent = "";
+      }
+    }
 
     ensureCharts();
     if (charts.lat && tel.inference_latency_ms != null) {

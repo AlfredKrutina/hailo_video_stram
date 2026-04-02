@@ -162,9 +162,12 @@ class CoreApp:
         while not self._stop.is_set():
             fps = None
             lat = None
-            if self._gst:
-                fps = self._gst.get_fps()
-                lat = self._gst.get_latency_ms()
+            extra: dict[str, Any] = {}
+            if self._gst and hasattr(self._gst, "get_diagnostics"):
+                try:
+                    extra.update(self._gst.get_diagnostics())
+                except Exception as e:
+                    extra["diagnostics_err"] = str(e)
             snap = TelemetrySnapshot(
                 pipeline_state=self._pipeline_state,
                 inference_latency_ms=lat,
@@ -173,6 +176,7 @@ class CoreApp:
                 hailo_temp_c=read_hailo_temp_c(),
                 camera_connected=self._pipeline_state == PipelineState.RUNNING,
                 last_error=self._last_error,
+                extra=extra,
             )
             self._redis.publish_telemetry(snap)
             self._redis.heartbeat()

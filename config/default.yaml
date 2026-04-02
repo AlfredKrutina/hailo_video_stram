@@ -7,5 +7,5 @@ model:
   confidence_threshold: 0.45
   iou_threshold: 0.45
 source:
-  uri: "rtsp://127.0.0.1:8554/stream"
-  label: "Ajax camera"
+  uri: "https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+  label: "Demo HTTP MP4 (Big Buck Bunny)"
