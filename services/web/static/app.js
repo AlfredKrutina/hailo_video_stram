@@ -534,7 +534,14 @@ function attachMjpegHandlers(img) {
     _agentLog("H3", "app.js:mjpeg:error", "img_error_event", {
       nw: img.naturalWidth,
       nh: img.naturalHeight,
+      wsState: lastWsPipelineState,
     });
+    if (String(lastWsPipelineState).toUpperCase() === "RUNNING") {
+      setStreamPill("stale", "MJPEG · bez dat");
+      streamState.lastLoadAt = Date.now();
+      showStreamError(false);
+      return;
+    }
     setStreamPill("dead", "MJPEG · chyba");
     showStreamError(true);
     if (streamState._mjpegErrorRetries < 4) {
@@ -640,6 +647,8 @@ let wsBackoff = 1000;
 const WS_BACKOFF_MAX = 30000;
 /** Poslední pipeline chyba z WS — banner jen při změně textu, ne každých 250 ms. */
 let lastPipelineErrorBanner = "";
+/** Poslední `pipeline_state` z telemetrie — `<img>` u MJPEG často nevyvolá opakovaný `load`, ale vyvolá `error`; při RUNNING nechceme blokovat náhled overlayem. */
+let lastWsPipelineState = "";
 
 function initWs() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -661,6 +670,16 @@ function initWs() {
     }
     const tel = msg.telemetry || {};
     const det = msg.detections || {};
+    lastWsPipelineState = String(tel.pipeline_state || "");
+    if (lastWsPipelineState.toUpperCase() === "RUNNING") {
+      const fb = $("streamFallback");
+      if (fb && !fb.hidden) {
+        showStreamError(false);
+        setStreamPill("live", "MJPEG · živě");
+        streamState.lastLoadAt = Date.now();
+        streamState._staleLogged = false;
+      }
+    }
     if (msg._meta && msg._meta.redis_degraded && msg._meta.streak === 1) {
       setAppAlert(
         "warn",
@@ -798,12 +817,22 @@ async function loadEvents() {
   (j.events || []).forEach((e) => {
     const row = document.createElement("div");
     row.className = "log-row";
-    const im = document.createElement("img");
     const name =
       e.snapshot_name || (e.snapshot || "").split("/").pop() || "";
-    im.src = name ? `/api/v1/snapshots/${encodeURIComponent(name)}` : "";
-    im.alt = "";
-    row.appendChild(im);
+    if (name) {
+      const im = document.createElement("img");
+      im.src = `/api/v1/snapshots/${encodeURIComponent(name)}`;
+      im.alt = "";
+      im.referrerPolicy = "no-referrer";
+      im.addEventListener("error", () => {
+        im.replaceWith(document.createTextNode("·"));
+      });
+      row.appendChild(im);
+    } else {
+      const dot = document.createElement("span");
+      dot.textContent = "· ";
+      row.appendChild(dot);
+    }
     const t = document.createElement("span");
     const attrs = e.attributes && Object.keys(e.attributes).length
       ? ` · ${JSON.stringify(e.attributes)}`
