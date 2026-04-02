@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from shared.agent_debug_ndjson import agent_debug_log
 from shared.errors import ErrorCode, log_error, log_warning_code
 
 if TYPE_CHECKING:
@@ -54,6 +55,7 @@ def create_mjpeg_app(q: queue.Queue[bytes | None]) -> web.Application:
 
         empty_s = 0
         placeholder_after_s = 5
+        first_placeholder_logged = False
 
         try:
             while True:
@@ -62,6 +64,16 @@ def create_mjpeg_app(q: queue.Queue[bytes | None]) -> web.Application:
                     empty_s += 1
                     if empty_s >= placeholder_after_s:
                         empty_s = 0
+                        # region agent log
+                        if not first_placeholder_logged:
+                            first_placeholder_logged = True
+                            agent_debug_log(
+                                "H1",
+                                "mjpeg_server.py:stream",
+                                "mjpeg_placeholder_no_pipeline_frames",
+                                {"empty_s_before_send": placeholder_after_s},
+                            )
+                        # endregion
                         await resp.write(boundary + _PLACEHOLDER_JPEG + b"\r\n")
                     continue
                 empty_s = 0

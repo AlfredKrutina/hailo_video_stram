@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 
+from shared.agent_debug_ndjson import agent_debug_log
 from shared.schemas.config import AppConfig, ModelConfig
 from shared.schemas.telemetry import PipelineState
 
@@ -472,6 +473,14 @@ class GstVisionPipeline:
             )
             if not ok:
                 logger.warning("eos_seek_simple_returned_false", extra={"extra_data": {"uri": sanitize_uri(uri)}})
+                # region agent log
+                agent_debug_log(
+                    "H1",
+                    "gst_pipeline.py:_try_loop_seek_after_eos",
+                    "eos_seek_simple_false",
+                    {"uri": sanitize_uri(uri)},
+                )
+                # endregion
                 self._pipeline.set_state(Gst.State.NULL)
                 return False
             ret = self._pipeline.set_state(Gst.State.PLAYING)
@@ -490,6 +499,14 @@ class GstVisionPipeline:
         self._controller.transition(PipelineState.RUNNING)
         self._on_state(PipelineState.RUNNING, None)
         logger.info("eos_seek_loop_ok", extra={"extra_data": {"uri": sanitize_uri(uri)}})
+        # region agent log
+        agent_debug_log(
+            "H1",
+            "gst_pipeline.py:_try_loop_seek_after_eos",
+            "eos_seek_loop_ok",
+            {"uri": sanitize_uri(uri)},
+        )
+        # endregion
         return True
 
     def _on_bus_message(self, bus: Any, message: Any) -> None:
@@ -497,6 +514,19 @@ class GstVisionPipeline:
         t = message.type
         if t == Gst.MessageType.ERROR:
             err, dbg = message.parse_error()
+            # region agent log
+            agent_debug_log(
+                "H1",
+                "gst_pipeline.py:_on_bus_message:ERROR",
+                "gst_bus_error",
+                {
+                    "err": str(err)[:500],
+                    "dbg": (str(dbg) if dbg else "")[:400],
+                    "ingress": self._ingress_mode,
+                    "uri": sanitize_uri(self._cfg.source.uri),
+                },
+            )
+            # endregion
             self._last_gst_error = str(err)
             logger.error("gst_error", extra={"extra_data": {"err": str(err), "dbg": dbg}})
             self._controller.transition(PipelineState.PAUSED)
@@ -523,6 +553,14 @@ class GstVisionPipeline:
             self._kill_ytdlp_child()
             self._start_recovery(str(err))
         elif t == Gst.MessageType.EOS:
+            # region agent log
+            agent_debug_log(
+                "H1",
+                "gst_pipeline.py:_on_bus_message:EOS",
+                "gst_eos_received",
+                {"ingress": self._ingress_mode, "uri": sanitize_uri(self._cfg.source.uri)},
+            )
+            # endregion
             logger.warning("gst_eos")
             # Konečné soubory / krátké HTTP MP4: po dohrání přijde EOS. Původní chování
             # (NULL + recovery) neustále restartovalo pipeline → málo snímků, prázdný MJPEG,
