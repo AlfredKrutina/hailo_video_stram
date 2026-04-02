@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>r-py · Vision</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">r-py</div>
+      <div class="section-title">Zdroje</div>
+      <ul id="sources" class="sources"></ul>
+      <div class="section-title">Hot-swap</div>
+      <input id="srcUri" type="text" placeholder="rtsp://…" autocomplete="off" />
+      <button id="btnSwap" type="button">Přepnout zdroj</button>
+      <div id="swapState" class="hint"></div>
+      <div class="section-title">Model</div>
+      <label>Confidence <input id="conf" type="range" min="0.05" max="0.95" step="0.01" value="0.45" /></label>
+      <span id="confVal" class="mono">0.45</span>
+      <button id="btnModel" type="button">Aplikovat prahy</button>
+      <div class="section-title">Ukládání (PostgreSQL)</div>
+      <p class="hint">Co se ukládá do databáze: typy objektů, volitelné atributy (jen pokud je model dodá), snímky, limity.</p>
+      <div id="recordingPanel" class="recording-panel"></div>
+      <div class="section-title">Zobrazení</div>
+      <p class="hint">Jeden MJPEG proud z backendu; AI běží na stejném časové ose (žádný druhý enkodér). Režim níže jen přepíná UI / budoucí druhý endpoint.</p>
+      <div class="seg" role="group" aria-label="Režim náhledu">
+        <button type="button" class="seg-btn active" data-view="main" id="viewMain">Hlavní náhled</button>
+        <button type="button" class="seg-btn" data-view="ai" id="viewAi">AI / substream</button>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="video-wrap" id="videoWrap">
+        <div class="video-toolbar">
+          <span id="streamStatus" class="stream-pill" data-state="unknown" title="Stav MJPEG spojení">Stream …</span>
+          <span id="wsStatus" class="stream-pill stream-ws" title="WebSocket telemetrie">WS …</span>
+          <button type="button" class="btn-ghost" id="btnReloadStream">Obnovit obraz</button>
+          <button type="button" class="btn-ghost" id="btnFs">Celá obrazovka</button>
+        </div>
+        <div class="video-stage" id="videoStage">
+          <img id="mjpeg" class="video" alt="Živý náhled kamery" decoding="async" />
+          <svg id="overlay" class="overlay" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="stream-fallback" id="streamFallback" hidden>
+            <p>Obraz se nepodařilo načíst.</p>
+            <button type="button" id="btnRetryStream">Zkusit znovu</button>
+          </div>
+        </div>
+        <div class="badge" id="stateBadge">…</div>
+      </div>
+      <div class="telemetry">
+        <canvas id="chLat" height="80" aria-label="Latence inference"></canvas>
+        <canvas id="chFps" height="80" aria-label="FPS"></canvas>
+        <canvas id="chTemp" height="80" aria-label="Teploty"></canvas>
+      </div>
+      <div class="metrics mono" id="metrics"></div>
+      <div class="events">
+        <div class="section-title">Event log</div>
+        <div id="log" class="log"></div>
+      </div>
+    </main>
+  </div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

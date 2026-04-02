@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: raspberry-py-ajax
+Version: 0.1.0
+Requires-Python: >=3.11
+Requires-Dist: pydantic>=2.5
+Requires-Dist: pydantic-settings>=2.2
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: redis>=5.0
+Requires-Dist: httpx>=0.27
+Requires-Dist: fastapi>=0.115
+Requires-Dist: uvicorn[standard]>=0.30
+Requires-Dist: numpy>=1.26
+Requires-Dist: aiohttp>=3.9
+Requires-Dist: sqlalchemy>=2.0
+Requires-Dist: psycopg[binary]>=3.1
+Provides-Extra: ai
+Requires-Dist: PyGObject>=3.46; platform_system != "Windows" and extra == "ai"
