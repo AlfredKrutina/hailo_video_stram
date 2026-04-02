@@ -7,8 +7,12 @@ const MJPEG_PATH = "/mjpeg/stream.mjpeg";
 
 const presets = [
   {
-    label: "Demo · HTTP MP4 (Big Buck Bunny)",
-    uri: "https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+    label: "Demo · soubor v image (doporučeno)",
+    uri: "file:///opt/rpy/assets/sample.mp4",
+  },
+  {
+    label: "Demo · HTTP MP4 (samplelib)",
+    uri: "https://samplelib.com/lib/preview/mp4/sample-5s.mp4",
   },
   {
     label: "RTSP (vlastní kamera)",
@@ -17,10 +21,6 @@ const presets = [
   {
     label: "YouTube (yt-dlp v kontejneru)",
     uri: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-  },
-  {
-    label: "Lokální soubor (v image)",
-    uri: "file:///opt/rpy/assets/sample.mp4",
   },
 ];
 

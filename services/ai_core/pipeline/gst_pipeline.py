@@ -4,6 +4,8 @@ GStreamer ingest for vision pipeline.
 Two ingress modes:
 - **RTSP** — `playbin` with video-only flags (avoids decodebin failing on obscure audio codecs; see NVR/VLC warnings).
 - **Other URIs** — `uridecodebin` (HTTP file, YouTube-resolved URL, local file).
+  Pro HTTPS z `yt-dlp` (googlevideo.com) je potřeba nastavit na `souphttpsrc` User-Agent a Referer,
+  jinak CDN vrací 403 — viz `_apply_browser_like_headers`.
 
 Downstream: fixed RGB size → tee → appsink (numpy inference) + jpegenc → MJPEG queue.
 
@@ -64,6 +66,40 @@ def _rtsp_use_playbin_video_only() -> bool:
         "true",
         "yes",
     )
+
+
+# Odkazy z yt-dlp (googlevideo.com) bez hlaviček často končí 403 Forbidden u souphttpsrc.
+_BROWSER_UA = (
+    "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+
+
+def _apply_browser_like_headers(source: Any) -> None:
+    """
+    Nastaví User-Agent a Referer na HTTP(S) zdroji (souphttpsrc / curlhttpsrc).
+    Bez toho YouTube CDN a některé buckety vracejí 403 i při „platné“ URL z yt-dlp.
+    """
+    try:
+        factory = source.get_factory()
+        name = (factory.get_name() or "").lower()
+    except Exception:
+        return
+    if "souphttp" not in name and "curlhttp" not in name:
+        return
+    for prop in ("user-agent", "user_agent"):
+        try:
+            source.set_property(prop, _BROWSER_UA)
+            break
+        except Exception:
+            continue
+    for prop in ("referer", "referrer"):
+        try:
+            source.set_property(prop, "https://www.youtube.com/")
+            break
+        except Exception:
+            continue
+    logger.debug("http_source_browser_headers", extra={"extra_data": {"element": name}})
 
 
 class GstVisionPipeline:
@@ -257,6 +293,7 @@ class GstVisionPipeline:
                 self._on_state(PipelineState.FAILED, "uridecodebin missing")
                 return
             decode.set_property("uri", resolved)
+            decode.connect("source-setup", lambda _bin, src: _apply_browser_like_headers(src))
             self._pipeline.add(decode)
             self._pipeline.add(vsink_bin)
             self._rtsp_mode = (

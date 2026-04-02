@@ -134,10 +134,11 @@ def _resolve_youtube(url: str) -> tuple[str | None, str | None]:
             "yt-dlp: binary missing in container. "
             "Install yt-dlp in Dockerfile.ai or use a direct HTTP/RTSP/file URL."
         )
+    # Single progressive URL for GStreamer: avoid strict ext=mp4 (often unavailable on YouTube).
     cmd = [
         ytdlp,
         "-f",
-        "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best",
+        "best[height<=720]/best[height<=1080]/best/worst",
         "--get-url",
         "--no-warnings",
         "--no-playlist",

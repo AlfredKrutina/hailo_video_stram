@@ -7,5 +7,6 @@ model:
   confidence_threshold: 0.45
   iou_threshold: 0.45
 source:
-  uri: "https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
-  label: "Demo HTTP MP4 (Big Buck Bunny)"
+  # V Docker image je po buildu /opt/rpy/assets/sample.mp4 — spolehlivější než veřejné Google demo URL (403 u GStreamer).
+  uri: "file:///opt/rpy/assets/sample.mp4"
+  label: "Demo soubor v image"
