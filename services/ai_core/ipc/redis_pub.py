@@ -11,7 +11,7 @@ from typing import Any
 
 import redis
 
-from shared.schemas.config import ModelConfig
+from shared.schemas.config import ModelConfig, SourceConfig
 from shared.schemas.detections import DetectionFrame
 from shared.schemas.recording import RecordingPolicy
 from shared.schemas.telemetry import PipelineState, TelemetrySnapshot
@@ -24,6 +24,12 @@ class RedisPublisher:
         self._r = redis.from_url(url, decode_responses=True)
         self._heartbeat_ttl_s = heartbeat_ttl_s
         self._url = url
+        # Sjednocuje poll + pub/sub source: bez toho by PATCH přes WS spustil rebuild dvakrát (pub/sub + poll).
+        self._last_source_uri: str = ""
+
+    def seed_source_uri(self, uri: str) -> None:
+        """Nastav před startem subscribe/listen — shoda s YAML/SOURCE_URI zabrání falešnému prvnímu poll."""
+        self._last_source_uri = (uri or "").strip()
 
     def publish_detections(self, frame: DetectionFrame) -> None:
         payload = frame.model_dump_json()
@@ -75,6 +81,7 @@ class RedisPublisher:
         self,
         on_model: Any,
         on_recording_policy: Any | None = None,
+        on_source: Any | None = None,
     ) -> None:
         ps = redis.from_url(self._url, decode_responses=True).pubsub(ignore_subscribe_messages=True)
         ps.subscribe("config:updates")
@@ -92,6 +99,12 @@ class RedisPublisher:
                         on_recording_policy(
                             RecordingPolicy.model_validate(data.get("payload", {})),
                         )
+                    elif t == "source" and on_source:
+                        src = SourceConfig.model_validate(data.get("payload", {}))
+                        u = (src.uri or "").strip()
+                        if u and u != self._last_source_uri:
+                            self._last_source_uri = u
+                            on_source(u)
                 except Exception as e:
                     logger.warning("config_msg_failed", extra={"extra_data": {"err": str(e)}})
 
@@ -102,17 +115,17 @@ class RedisPublisher:
         return self._r.get("config:recording_policy")
 
     def listen_source_changes(self, on_uri: Any) -> None:
-        """Poll config:source for hot-swap when set by API."""
+        """Poll config:source for hot-swap when set by API (backup if pub/sub missed a message)."""
 
         def loop() -> None:
-            last = ""
             while True:
                 try:
                     raw = self._r.get("config:source")
-                    if raw and raw != last:
-                        last = raw
+                    if raw:
                         payload = json.loads(raw)
-                        if uri := payload.get("uri"):
+                        uri = (payload.get("uri") or "").strip()
+                        if uri and uri != self._last_source_uri:
+                            self._last_source_uri = uri
                             on_uri(uri)
                 except Exception as e:
                     logger.debug("source_poll", extra={"extra_data": {"err": str(e)}})

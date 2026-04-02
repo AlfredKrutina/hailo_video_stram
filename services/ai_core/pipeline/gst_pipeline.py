@@ -677,6 +677,16 @@ class GstVisionPipeline:
                 self._rebuild()
             return
 
+        # RTSP EOS (výpadek / odpojení): stejně jako HTTP rychlý rebuild místo 1.5 s + backoff.
+        if reason == "EOS" and ul0.startswith("rtsp://"):
+            time.sleep(0.12)
+            if not self._recover_stop.is_set():
+                self._controller.transition(PipelineState.RUNNING)
+                self._on_state(PipelineState.RECOVERING, None)
+                time.sleep(0.05)
+                self._rebuild()
+            return
+
         time.sleep(1.5)
         backoff = 3.0
         while not self._recover_stop.is_set():

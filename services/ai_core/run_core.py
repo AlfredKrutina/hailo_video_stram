@@ -179,6 +179,12 @@ class CoreApp:
             fps = None
             lat = None
             extra: dict[str, Any] = {}
+            if self._gst is not None:
+                try:
+                    fps = self._gst.get_fps()
+                    lat = self._gst.get_latency_ms()
+                except Exception as e:
+                    extra["telemetry_metrics_err"] = str(e)
             if self._gst and hasattr(self._gst, "get_diagnostics"):
                 try:
                     extra.update(self._gst.get_diagnostics())
@@ -217,7 +223,12 @@ class CoreApp:
         signal.signal(signal.SIGINT, handle_sig)
         signal.signal(signal.SIGTERM, handle_sig)
 
-        self._redis.subscribe_config(self._apply_model, self._apply_recording_policy)
+        self._redis.seed_source_uri(self.cfg.source.uri)
+        self._redis.subscribe_config(
+            self._apply_model,
+            self._apply_recording_policy,
+            on_source=self._apply_source,
+        )
         self._redis.listen_source_changes(self._apply_source)
 
         threading.Thread(target=self._telemetry_loop, daemon=True).start()
