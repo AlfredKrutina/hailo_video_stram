@@ -1,1 +1,0 @@
-"""Web consumer (FastAPI)."""

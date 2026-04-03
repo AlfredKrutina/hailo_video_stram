@@ -1,9 +1,0 @@
-# Sloučení: docker compose -f docker-compose.yml -f docker-compose.youtube-dev.yml up -d
-# Zvedne limit RAM pro ai_core při dlouhém běhu yt-dlp (viz docs/YOUTUBE_PI_LIMITS.md).
-
-services:
-  ai_core:
-    deploy:
-      resources:
-        limits:
-          memory: 2G

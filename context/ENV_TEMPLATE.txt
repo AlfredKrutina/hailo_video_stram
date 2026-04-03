@@ -1,0 +1,14 @@
+# Copy values into your shell or a .env loader — not read by main.py automatically.
+
+SOURCE_URI=rtsp://192.168.1.10:554/stream
+# SOURCE_URI=file:///path/to/video.mp4
+
+HAILO_HEF_PATH=/path/to/yolov8s.hef
+HAILO_FILTER_SO=/path/to/libyolo_hailort_postprocess.so
+
+MODEL_WIDTH=640
+MODEL_HEIGHT=640
+
+DEBUG=1
+HOST=0.0.0.0
+PORT=8080

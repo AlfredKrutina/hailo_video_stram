@@ -1,8 +1,0 @@
-config
-context
-docker
-docs
-nginx
-scripts
-services
-shared
