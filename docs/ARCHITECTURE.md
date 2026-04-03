@@ -4,11 +4,11 @@
 
 | Component | Role |
 |-----------|------|
-| **ai_core** | GStreamer ingest, inference (stub / ONNX CPU / Hailo podle env), publishes detections + telemetry to Redis, MJPEG upstream for Nginx |
-| **web** | FastAPI: Redis + PostgreSQL, REST (včetně politiky ukládání), WebSocket |
+| **ai_core** | GStreamer ingest, inference (stub / ONNX CPU / Hailo podle env), publishes detections + telemetry to Redis, interní **WebSocket** `/ws/video` (binární JPEG, :8081 v Docker síti) |
+| **web** | FastAPI: Redis + PostgreSQL, REST (včetně politiky ukládání), WebSocket `/ws/telemetry` (JSON + forward videa z ai_core) |
 | **postgres** | Trvalé uložení `detection_events` a `recording_policy` |
-| **redis** | IPC: latest frame metadata, pub/sub, cache politiky pro `ai_core`, volitelný stream náhledu |
-| **nginx** | TLS termination, reverse proxy to web API, mirrors MJPEG from ai_core |
+| **redis** | IPC: latest frame metadata, pub/sub, cache politiky pro `ai_core` |
+| **nginx** | Reverse proxy na `web` (:80 → `web:8080`); WebSocket upgrade pro `/ws/*` |
 | **watchdog** | Monitors Redis heartbeat from ai_core; optional Hailo reset script on crash |
 
 ## Detection JSON (Redis key `detections:latest`)
@@ -33,8 +33,8 @@ Set `ENVIRONMENT=staging` for verbose structured logging and pipeline diagnostic
 
 | Oblast UI | Zdroj dat | Poznámka |
 |-----------|-----------|----------|
-| Živý obraz | MJPEG z `ai_core` (`/mjpeg/stream.mjpeg` přes Nginx) | Jeden proud; bounding boxy nejsou v obraze, jen JSON + SVG overlay |
-| Overlay (rámečky) | Redis `detections:latest` → WebSocket `/ws/telemetry` | Souřadnice normalizované 0–1; `frame_id` v JSON pro párování s aktuálním snímkem (best-effort vs MJPEG) |
+| Živý obraz | Binární JPEG (`0x01` + bytes) na **`/ws/telemetry`** — `web` forwarduje z `ws://ai_core:8081/ws/video` | Žádný chunked MJPEG přes HTTP; jeden WS kanál pro UI |
+| Overlay (rámečky) | Redis `detections:latest` → stejný WebSocket `/ws/telemetry` (JSON) | Souřadnice normalizované 0–1; `frame_id` v JSON pro párování se snímkem |
 | Stav pipeline / telemetrie | `telemetry:latest` | Badge, text, grafy (latence, FPS, teploty, bitrate/loss pokud backend plní) |
 | Hot-swap zdroje | `PATCH /api/v1/source` → Redis `config:source` → `ai_core` | Včetně `v4l2:///dev/video0` na Pi (mapovat zařízení do kontejneru). |
 | Práhy modelu | `PATCH /api/v1/model` → `config:model` | Rozšiřitelné v `ModelConfig` |

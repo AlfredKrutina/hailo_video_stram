@@ -28,12 +28,15 @@ async def get_last_video_frame() -> Optional[bytes]:
 async def _ingest_loop() -> None:
     global _last_video_message
     backoff = 1.0
+    reconnect_streak = 0
+    staging = os.environ.get("ENVIRONMENT", "").lower() == "staging"
     while True:
         try:
             timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=300)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.ws_connect(AI_CORE_VIDEO_WS_URL, heartbeat=60) as ws:
                     backoff = 1.0
+                    reconnect_streak = 0
                     logger.info("ai_core_video_ws_connected", extra={"extra_data": {"url": AI_CORE_VIDEO_WS_URL}})
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.BINARY:
@@ -44,10 +47,24 @@ async def _ingest_loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning(
-                "ai_core_video_ws_reconnect",
-                extra={"extra_data": {"err": str(e), "backoff_s": round(backoff, 2)}},
-            )
+            reconnect_streak += 1
+            if reconnect_streak == 1 or reconnect_streak % 10 == 0:
+                logger.warning(
+                    "ai_core_video_ws_unavailable",
+                    extra={
+                        "extra_data": {
+                            "err": str(e),
+                            "backoff_s": round(backoff, 2),
+                            "reconnect_streak": reconnect_streak,
+                            "url": AI_CORE_VIDEO_WS_URL,
+                        },
+                    },
+                )
+            elif staging:
+                logger.info(
+                    "ai_core_video_ws_reconnect",
+                    extra={"extra_data": {"err": str(e), "backoff_s": round(backoff, 2), "n": reconnect_streak}},
+                )
             async with _lock:
                 _last_video_message = None
             await asyncio.sleep(backoff)

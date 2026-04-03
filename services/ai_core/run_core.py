@@ -361,6 +361,7 @@ class CoreApp:
         def run_async() -> None:
             asyncio.run(amain())
 
+        # Video WS (aiohttp) v samostatném vlákně — hlavní vlákno níže jen pro GStreamer GLib smyčku, bez blokování WS smyčkou.
         threading.Thread(target=run_async, daemon=True).start()
         time.sleep(0.3)
 

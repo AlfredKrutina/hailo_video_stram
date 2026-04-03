@@ -135,33 +135,50 @@ def _redis_call(fn: Callable[[], T], *, op: str) -> T:
 async def startup() -> None:
     global _db_ok
     setup_logging("web")
-    if get_database_url() and init_db():
+    if get_database_url():
         try:
-            p = load_policy_from_db()
-            if p is not None:
-                try:
-                    r.set("config:recording_policy", policy_to_redis_json(p))
-                    r.publish(
-                        "config:updates",
-                        json.dumps({"type": "recording_policy", "payload": p.model_dump()}),
-                    )
-                except redis.RedisError as e:
-                    log_error(logger, ErrorCode.REDIS_COMMAND_FAILED, "startup redis seed", exc=e)
-                    _db_ok = False
-                else:
-                    _db_ok = True
-            else:
-                # DB reachable but no policy row yet — still treat Postgres as usable
-                _db_ok = True
-        except SQLAlchemyError as e:
-            log_error(logger, ErrorCode.DATABASE_READ_FAILED, "db seed read failed", exc=e)
-            _db_ok = False
+            db_ready = init_db()
         except Exception as e:
-            log_error(logger, ErrorCode.DATABASE_READ_FAILED, "db_seed_failed", exc=e)
+            # init_db() může vyhodit (DB ještě nedostupná, síť) — web musí přesto naběhnout (Redis + API).
+            log_error(logger, ErrorCode.DATABASE_UNAVAILABLE, "init_db failed", exc=e)
             _db_ok = False
+        else:
+            if not db_ready:
+                logger.warning("database_init_returned_false")
+                _db_ok = False
+            else:
+                try:
+                    p = load_policy_from_db()
+                    if p is not None:
+                        try:
+                            r.set("config:recording_policy", policy_to_redis_json(p))
+                            r.publish(
+                                "config:updates",
+                                json.dumps({"type": "recording_policy", "payload": p.model_dump()}),
+                            )
+                        except redis.RedisError as e:
+                            log_error(logger, ErrorCode.REDIS_COMMAND_FAILED, "startup redis seed", exc=e)
+                            _db_ok = False
+                        else:
+                            _db_ok = True
+                    else:
+                        # DB reachable but no policy row yet — still treat Postgres as usable
+                        _db_ok = True
+                except SQLAlchemyError as e:
+                    log_error(logger, ErrorCode.DATABASE_READ_FAILED, "db seed read failed", exc=e)
+                    _db_ok = False
+                except Exception as e:
+                    log_error(logger, ErrorCode.DATABASE_READ_FAILED, "db_seed_failed", exc=e)
+                    _db_ok = False
     else:
         logger.warning("database_url_missing_skipping_pg")
-    start_video_ingest()
+    try:
+        start_video_ingest()
+    except Exception as e:
+        logger.warning(
+            "video_ingest_start_failed_continuing",
+            extra={"extra_data": {"err": str(e)}},
+        )
 
 
 @app.exception_handler(redis.RedisError)
@@ -287,7 +304,7 @@ def telemetry() -> Any:
 
 @app.get("/api/v1/diagnostics")
 async def diagnostics() -> Any:
-    """Aggregated checks for operators (Redis, DB, ai_core, MJPEG upstream)."""
+    """Aggregated checks for operators (Redis, DB, ai_core, video WebSocket upstream)."""
     try:
         report = await collect_diagnostics(
             r,
@@ -440,8 +457,9 @@ async def ws_telemetry(ws: WebSocket) -> None:
             if now >= t_next_json:
                 t_next_json = now + json_interval
                 try:
-                    raw = r.get("telemetry:latest")
-                    det = r.get("detections:latest")
+                    raw, det = await asyncio.to_thread(
+                        lambda: (r.get("telemetry:latest"), r.get("detections:latest")),
+                    )
                     redis_fail_streak = 0
                 except redis.RedisError as e:
                     redis_fail_streak += 1

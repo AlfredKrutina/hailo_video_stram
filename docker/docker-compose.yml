@@ -1,5 +1,8 @@
 # Volitelný limit paměti pro yt-dlp na Pi: docker compose -f docker-compose.yml -f docker-compose.youtube-dev.yml up -d
 # Viz docs/YOUTUBE_PI_LIMITS.md
+#
+# Porty: uživatel → nginx :80 → web :8080. ai_core vystavuje video WS na :8081 jen uvnitř Docker sítě
+# (RPY_AI_CORE_VIDEO_WS_URL=ws://ai_core:8081/ws/video); na hosta neexportovat bez nutnosti ladění.
 
 services:
   redis:
@@ -105,13 +108,27 @@ services:
         condition: service_healthy
     ports:
       - "8080:8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=6); raise SystemExit(0 if r.status == 200 else 1)",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
 
   nginx:
     image: nginx:1.25-alpine
     restart: unless-stopped
     depends_on:
-      - web
-      - ai_core
+      web:
+        condition: service_healthy
+      ai_core:
+        condition: service_started
     ports:
       - "80:80"
       - "443:443"
