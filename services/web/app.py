@@ -3,7 +3,7 @@ FastAPI service (`web` container): REST, WebSocket, static SPA.
 
 Architecture (see also nginx/nginx.conf):
 - Browser talks to Nginx :80. `/`, `/assets`, `/api/*`, `/ws/*` are proxied here.
-- Live video MJPEG is served by `ai_core:8081`, not this process — do not point `<img>` at `/api/*` for video.
+- Live video: JPEG přes `/ws/telemetry` (binární rámce z ai_core přes [ws_video_bridge](services/web/ws_video_bridge.py)).
 - Redis holds hot state (telemetry, detections, config:* keys). PostgreSQL holds recording policy rows and events.
 - If Redis is down, prefer HTTP 503 with `{"code":"REDIS_UNAVAILABLE",...}` (see shared.errors.ErrorCode).
 """
@@ -21,7 +21,7 @@ from typing import Any, Callable, TypeVar
 import redis
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
@@ -40,6 +40,7 @@ from services.persistence.recording_store import (
 from services.persistence.session import get_database_url, init_db
 from services.web.diagnostics import collect_diagnostics
 from services.web.recording_api import validate_policy_against_catalog
+from services.web.ws_video_bridge import get_last_video_frame, start_video_ingest
 
 logger = logging.getLogger("web")
 
@@ -160,6 +161,7 @@ async def startup() -> None:
             _db_ok = False
     else:
         logger.warning("database_url_missing_skipping_pg")
+    start_video_ingest()
 
 
 @app.exception_handler(redis.RedisError)
@@ -421,47 +423,59 @@ def get_snapshot(name: str) -> FileResponse:
 @app.websocket("/ws/telemetry")
 async def ws_telemetry(ws: WebSocket) -> None:
     """
-    Push telemetry + latest detections ~4 Hz. On Redis errors, send empty objects and log
-    (avoids tearing down the whole socket on transient failures).
+    Telemetrie + detekce jako JSON (~4 Hz) a video z ai_core jako binární zprávy (prefix 0x01 + JPEG).
+    Jedna smyčka — nedochází k souběžnému send na stejném WS.
     """
     await ws.accept()
     redis_fail_streak = 0
+    t_next_json = time.perf_counter()
+    t_next_video = time.perf_counter()
+    prev_video: bytes | None = None
+    json_interval = 0.25
+    video_interval = 1.0 / 25.0
+
     try:
         while True:
-            try:
-                raw = r.get("telemetry:latest")
-                det = r.get("detections:latest")
-                redis_fail_streak = 0
-            except redis.RedisError as e:
-                redis_fail_streak += 1
-                log_error(logger, ErrorCode.REDIS_COMMAND_FAILED, "ws telemetry redis get", exc=e)
-                raw, det = None, None
-                if redis_fail_streak == 1 or redis_fail_streak % 40 == 0:
-                    logger.warning(
-                        "ws_telemetry_redis_degraded",
-                        extra={"extra_data": {"streak": redis_fail_streak}},
-                    )
-            payload = {
-                "telemetry": json_loads_safe(raw, logger, "ws:telemetry"),
-                "detections": json_loads_safe(det, logger, "ws:detections"),
-            }
-            if redis_fail_streak:
-                payload["_meta"] = {"redis_degraded": True, "streak": redis_fail_streak}
-            try:
+            now = time.perf_counter()
+            if now >= t_next_json:
+                t_next_json = now + json_interval
+                try:
+                    raw = r.get("telemetry:latest")
+                    det = r.get("detections:latest")
+                    redis_fail_streak = 0
+                except redis.RedisError as e:
+                    redis_fail_streak += 1
+                    log_error(logger, ErrorCode.REDIS_COMMAND_FAILED, "ws telemetry redis get", exc=e)
+                    raw, det = None, None
+                    if redis_fail_streak == 1 or redis_fail_streak % 40 == 0:
+                        logger.warning(
+                            "ws_telemetry_redis_degraded",
+                            extra={"extra_data": {"streak": redis_fail_streak}},
+                        )
+                payload = {
+                    "telemetry": json_loads_safe(raw, logger, "ws:telemetry"),
+                    "detections": json_loads_safe(det, logger, "ws:detections"),
+                }
+                if redis_fail_streak:
+                    payload["_meta"] = {"redis_degraded": True, "streak": redis_fail_streak}
                 await ws.send_json(payload)
-            except (RuntimeError, ConnectionError) as e:
-                log_warning_code(logger, ErrorCode.INTERNAL, "ws send_json failed", err=str(e))
-                break
-            await asyncio.sleep(0.25)
+
+            if now >= t_next_video:
+                frame = await get_last_video_frame()
+                if frame is not None and frame != prev_video:
+                    prev_video = frame
+                    t_next_video = now + video_interval
+                    await ws.send_bytes(frame)
+                else:
+                    t_next_video = now + video_interval
+
+            await asyncio.sleep(0.01)
     except WebSocketDisconnect:
         logger.debug("ws_telemetry_disconnect")
         return
-
-
-@app.get("/video_feed")
-async def video_feed() -> RedirectResponse:
-    """Alias na MJPEG (přes Nginx stejný origin → ai_core); drží živý multipart stream."""
-    return RedirectResponse(url="/mjpeg/stream.mjpeg", status_code=307)
+    except (RuntimeError, ConnectionError) as e:
+        log_warning_code(logger, ErrorCode.INTERNAL, "ws telemetry send failed", err=str(e))
+        return
 
 
 @app.get("/")

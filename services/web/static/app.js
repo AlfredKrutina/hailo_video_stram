@@ -1,10 +1,7 @@
 /**
- * MJPEG: stejný origin (/mjpeg/stream.mjpeg). Nginx aliasy: /video/stream.mjpeg, /stream.mjpeg, /api/stream_mjpeg.
- * UI musí jít přes Nginx (typ. :80), ne přímo na :8080 — jinak FastAPI /mjpeg/ neumí a <img> dostane 404.
- * Nepoužívat crossOrigin u <img> – u multipart streamu to umí rozbít prohlížeč.
+ * Video: JPEG snímky přes WebSocket (/ws/telemetry) — binární zprávy 0x01 + JPEG.
+ * Telemetrie + detekce: JSON text na stejném kanálu.
  */
-
-const MJPEG_PATH = "/mjpeg/stream.mjpeg";
 
 const presets = [
   {
@@ -128,80 +125,29 @@ function renderDiagnosticsTable(report, clientCheck) {
   return html;
 }
 
-async function measureMjpegBrowserTtfb(timeoutMs = 5000) {
-  const ac = new AbortController();
-  const t0 = performance.now();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
-  try {
-    const r = await fetch(mjpegUrl(), { signal: ac.signal, cache: "no-store" });
-    if (!r.ok) {
-      clearTimeout(timer);
-      return {
-        id: "mjpeg_browser_ttfb",
-        severity: "fail",
-        ok: false,
-        latency_ms: Math.round(performance.now() - t0),
-        detail: `HTTP ${r.status}`,
-        data: {},
-      };
-    }
-    const reader = r.body?.getReader();
-    if (!reader) {
-      clearTimeout(timer);
-      return {
-        id: "mjpeg_browser_ttfb",
-        severity: "fail",
-        ok: false,
-        latency_ms: null,
-        detail: "no body",
-        data: {},
-      };
-    }
-    const first = await reader.read();
-    clearTimeout(timer);
-    await reader.cancel().catch(() => {});
-    const ms = Math.round(performance.now() - t0);
-    const v = first.value;
-    const bytes =
-      v == null
-        ? 0
-        : typeof v.byteLength === "number"
-          ? v.byteLength
-          : typeof v.length === "number"
-            ? v.length
-            : 0;
-    if (first.done && bytes === 0) {
-      return {
-        id: "mjpeg_browser_ttfb",
-        severity: "fail",
-        ok: false,
-        latency_ms: ms,
-        detail: "0 bajtů (stream hned skončil)",
-        data: {},
-      };
-    }
-    const ok = bytes > 0;
+/** Klient: poslední WS video snímek (nastavuje initWs při binární zprávě). */
+function measureVideoWsClient() {
+  const t = window.__lastVideoFrameAt;
+  if (t == null || t === 0) {
     return {
-      id: "mjpeg_browser_ttfb",
-      severity: ok ? "ok" : "warn",
-      ok,
-      latency_ms: ms,
-      detail: ok ? `první chunk ${bytes} B` : "prázdný chunk",
-      data: { bytes },
-    };
-  } catch (e) {
-    clearTimeout(timer);
-    const name = e?.name || "";
-    const ms = Math.round(performance.now() - t0);
-    return {
-      id: "mjpeg_browser_ttfb",
-      severity: "fail",
+      id: "ws_video_client",
+      severity: "warn",
       ok: false,
-      latency_ms: ms,
-      detail: name === "AbortError" ? `timeout ${timeoutMs} ms` : String(e),
+      latency_ms: null,
+      detail: "zatím žádný video snímek z WS",
       data: {},
     };
   }
+  const age = Date.now() - t;
+  const ok = age < 3500;
+  return {
+    id: "ws_video_client",
+    severity: ok ? "ok" : "warn",
+    ok,
+    latency_ms: Math.round(age),
+    detail: ok ? `poslední snímek před ${Math.round(age)} ms` : `stale ${Math.round(age)} ms`,
+    data: {},
+  };
 }
 
 async function runDiagnostics() {
@@ -218,7 +164,7 @@ async function runDiagnostics() {
         if (!res.ok) throw new Error(formatApiError(j, res));
         return j;
       }),
-      measureMjpegBrowserTtfb(5000),
+      Promise.resolve(measureVideoWsClient()),
     ]);
     panel.innerHTML = renderDiagnosticsTable(server, client);
   } catch (e) {
@@ -230,12 +176,6 @@ async function runDiagnostics() {
 
 function initDiagnostics() {
   $("btnDiagnostics")?.addEventListener("click", runDiagnostics);
-}
-
-function mjpegUrl() {
-  const u = new URL(MJPEG_PATH, window.location.origin);
-  u.searchParams.set("t", String(Date.now()));
-  return u.toString();
 }
 
 function initSources() {
@@ -255,15 +195,15 @@ function initSources() {
 
 /** Přepočet letterboxu u object-fit: contain — overlay musí sedět na video, ne na celý box. */
 function layoutOverlay() {
-  const img = $("mjpeg");
+  const canvas = $("videoCanvas");
   const svg = $("overlay");
   const stage = $("videoStage");
-  if (!img || !svg || !stage) return;
+  if (!canvas || !svg || !stage) return;
 
   const cw = stage.clientWidth;
   const ch = stage.clientHeight;
-  const nw = img.naturalWidth || 0;
-  const nh = img.naturalHeight || 0;
+  const nw = canvas.width || 0;
+  const nh = canvas.height || 0;
   if (cw <= 0 || ch <= 0) return;
 
   let dispW = cw;
@@ -302,7 +242,7 @@ function drawBoxes(detections) {
       pill.textContent = `AI · ${parts.join(" · ")}`;
       pill.title =
         frameId != null
-          ? `Snímek frame_id=${frameId} (MJPEG může mírně zaostávat)`
+          ? `Snímek frame_id=${frameId} (telemetrie může mírně zaostávat)`
           : "Detekce z posledního inference snímku";
     } else {
       pill.hidden = true;
@@ -504,14 +444,10 @@ function pushChart(ch, val, datasetIndex) {
   ch.update("none");
 }
 
-const streamState = {
-  lastLoadAt: 0,
-  _startedAt: 0,
+const videoStreamState = {
   staleTimer: null,
-  STALE_MS: 8000,
-  _staleLogged: false,
-  /** Po img error auto-reload (multipart často nedá druhý load po obnově streamu). */
-  _mjpegErrorRetries: 0,
+  /** Bez binárního snímku déle než STALE_MS ms → overlay. */
+  STALE_MS: 3000,
 };
 
 function setStreamPill(state, text) {
@@ -528,71 +464,34 @@ function setWsPill(ok, text) {
   el.textContent = text;
 }
 
-function showStreamError(show) {
+function showStreamWaiting(show) {
   const fb = $("streamFallback");
+  const msg = $("streamFallbackMsg");
+  if (msg) msg.textContent = "Čekám na stream…";
   if (fb) fb.hidden = !show;
 }
 
-function attachMjpegHandlers(img) {
-  img.addEventListener("load", () => {
-    streamState.lastLoadAt = Date.now();
-    streamState._staleLogged = false;
-    streamState._mjpegErrorRetries = 0;
-    setStreamPill("live", "MJPEG · živě");
-    showStreamError(false);
-    layoutOverlay();
-  });
-  img.addEventListener("error", () => {
-    if (String(lastWsPipelineState).toUpperCase() === "RUNNING") {
-      setStreamPill("stale", "MJPEG · bez dat");
-      streamState.lastLoadAt = Date.now();
-      showStreamError(false);
-      return;
-    }
-    setStreamPill("dead", "MJPEG · chyba");
-    showStreamError(true);
-    if (streamState._mjpegErrorRetries < 10) {
-      streamState._mjpegErrorRetries += 1;
-      const step = Math.min(streamState._mjpegErrorRetries - 1, 5);
-      const delay = Math.min(10000, 500 + step * 900);
-      setTimeout(() => reloadMjpeg(), delay);
-    }
-  });
-}
-
-function startStreamStaleWatch() {
-  if (streamState.staleTimer) clearInterval(streamState.staleTimer);
-  streamState.staleTimer = setInterval(() => {
-    const img = $("mjpeg");
-    if (!img || !img.src) return;
+function startVideoStaleWatch() {
+  if (videoStreamState.staleTimer) clearInterval(videoStreamState.staleTimer);
+  videoStreamState.staleTimer = setInterval(() => {
+    const t = window.__lastVideoFrameAt;
     const now = Date.now();
-    if (!streamState.lastLoadAt) {
-      if (img.complete === false && now - (streamState._startedAt || now) > 12000) {
-        setStreamPill("dead", "MJPEG · bez odpovědi");
-        showStreamError(true);
+    if (t == null || t === 0) {
+      if (String(lastWsPipelineState).toUpperCase() === "RUNNING") {
+        setStreamPill("stale", "WS-VIDEO · bez dat");
+        showStreamWaiting(true);
       }
       return;
     }
-    const age = now - streamState.lastLoadAt;
-    if (age > streamState.STALE_MS) {
-      setStreamPill("stale", "MJPEG · bez dat");
-      if (!streamState._staleLogged) {
-        streamState._staleLogged = true;
-      }
+    const age = now - t;
+    if (age > videoStreamState.STALE_MS) {
+      setStreamPill("stale", "WS-VIDEO · bez dat");
+      showStreamWaiting(true);
+    } else {
+      setStreamPill("live", "WS-VIDEO · živě");
+      showStreamWaiting(false);
     }
-  }, 2000);
-}
-
-function reloadMjpeg() {
-  const img = $("mjpeg");
-  if (!img) return;
-  setStreamPill("unknown", "MJPEG · načítám…");
-  showStreamError(false);
-  img.removeAttribute("src");
-  streamState._startedAt = Date.now();
-  requestAnimationFrame(() => {
-    img.src = mjpegUrl();
-  });
+  }, 500);
 }
 
 async function swapSource() {
@@ -619,10 +518,6 @@ async function swapSource() {
       return;
     }
     $("swapState").textContent = j.state || "OK";
-    setTimeout(() => {
-      streamState._mjpegErrorRetries = 0;
-      reloadMjpeg();
-    }, 1800);
   } catch (e) {
     $("swapState").textContent = String(e);
     setAppAlert("error", `Zdroj: ${String(e)}`, 0);
@@ -652,37 +547,18 @@ let wsBackoff = 1000;
 const WS_BACKOFF_MAX = 30000;
 /** Poslední pipeline chyba z WS — banner jen při změně textu, ne každých 250 ms. */
 let lastPipelineErrorBanner = "";
-/** Poslední `pipeline_state` z telemetrie — `<img>` u MJPEG často nevyvolá opakovaný `load`, ale vyvolá `error`; při RUNNING nechceme blokovat náhled overlayem. */
+/** Poslední `pipeline_state` z telemetrie — při RUNNING bez video snímku z WS neblokovat zbytečně overlay. */
 let lastWsPipelineState = "";
 
-function initWs() {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws/telemetry`);
-  setWsPill(false, "WS …");
-
-  ws.onopen = () => {
-    wsBackoff = 1000;
-    setWsPill(true, "WS · OK");
-  };
-
-  ws.onmessage = (ev) => {
-    let msg;
-    try {
-      msg = JSON.parse(ev.data);
-    } catch (err) {
-      setAppAlert("warn", `WS telemetrie: neplatný JSON (${String(err)})`, 8000);
-      return;
-    }
+function applyTelemetryMessage(msg) {
     const tel = msg.telemetry || {};
     const det = msg.detections || {};
     lastWsPipelineState = String(tel.pipeline_state || "");
     if (lastWsPipelineState.toUpperCase() === "RUNNING") {
       const fb = $("streamFallback");
-      if (fb && !fb.hidden) {
-        showStreamError(false);
-        setStreamPill("live", "MJPEG · živě");
-        streamState.lastLoadAt = Date.now();
-        streamState._staleLogged = false;
+      if (fb && !fb.hidden && window.__lastVideoFrameAt) {
+        showStreamWaiting(false);
+        setStreamPill("live", "WS-VIDEO · živě");
       }
     }
     if (msg._meta && msg._meta.redis_degraded && msg._meta.streak === 1) {
@@ -740,7 +616,7 @@ function initWs() {
         lastPipelineErrorBanner = errStr;
         if (isRtsp404) {
           setAppAlert("error", errStr, 0);
-          showStreamError(false);
+          showStreamWaiting(false);
         } else {
           setAppAlert("warn", `Pipeline: ${errStr}`, 12000);
         }
@@ -798,6 +674,60 @@ function initWs() {
         charts.temp.update("none");
       }
     }
+}
+
+function handleVideoBinary(buf) {
+  if (!(buf instanceof ArrayBuffer) || buf.byteLength < 3) return;
+  const u8 = new Uint8Array(buf);
+  if (u8[0] !== 1) return;
+  const jpegBytes = u8.subarray(1);
+  const blob = new Blob([jpegBytes], { type: "image/jpeg" });
+  createImageBitmap(blob)
+    .then((bm) => {
+      const c = $("videoCanvas");
+      const ctx = c?.getContext("2d");
+      if (!c || !ctx) {
+        bm.close();
+        return;
+      }
+      if (c.width !== bm.width || c.height !== bm.height) {
+        c.width = bm.width;
+        c.height = bm.height;
+      }
+      ctx.drawImage(bm, 0, 0);
+      bm.close();
+      window.__lastVideoFrameAt = Date.now();
+      setStreamPill("live", "WS-VIDEO · živě");
+      showStreamWaiting(false);
+      layoutOverlay();
+    })
+    .catch(() => {});
+}
+
+function initWs() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws/telemetry`);
+  ws.binaryType = "arraybuffer";
+  setWsPill(false, "WS …");
+
+  ws.onopen = () => {
+    wsBackoff = 1000;
+    setWsPill(true, "WS · OK");
+  };
+
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") {
+      let msg;
+      try {
+        msg = JSON.parse(ev.data);
+      } catch (err) {
+        setAppAlert("warn", `WS telemetrie: neplatný JSON (${String(err)})`, 8000);
+        return;
+      }
+      applyTelemetryMessage(msg);
+      return;
+    }
+    handleVideoBinary(ev.data);
   };
 
   ws.onerror = () => setWsPill(false, "WS · chyba");
@@ -1068,26 +998,18 @@ function initViewToggle() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  window.__lastVideoFrameAt = 0;
   fetchHealth();
   initSources();
   initViewToggle();
   initDiagnostics();
 
-  const img = $("mjpeg");
-  attachMjpegHandlers(img);
-  streamState.lastLoadAt = 0;
-  streamState._startedAt = Date.now();
-  setStreamPill("unknown", "MJPEG · načítám…");
-  img.src = mjpegUrl();
-  startStreamStaleWatch();
+  setStreamPill("unknown", "WS-VIDEO · …");
+  initWs();
+  startVideoStaleWatch();
 
   $("btnReloadStream")?.addEventListener("click", () => {
-    streamState._mjpegErrorRetries = 0;
-    reloadMjpeg();
-  });
-  $("btnRetryStream")?.addEventListener("click", () => {
-    streamState._mjpegErrorRetries = 0;
-    reloadMjpeg();
+    window.location.reload();
   });
 
   $("btnFs")?.addEventListener("click", () => {
@@ -1106,7 +1028,6 @@ window.addEventListener("DOMContentLoaded", () => {
   $("btnSwap").addEventListener("click", swapSource);
   $("btnModel").addEventListener("click", patchModel);
   initRecording();
-  initWs();
   setInterval(loadEvents, 4000);
   loadEvents();
 

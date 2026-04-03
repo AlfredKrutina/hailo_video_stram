@@ -84,8 +84,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    ports:
-      - "8081:8081"
 
   web:
     build:
@@ -94,7 +92,7 @@ services:
     restart: unless-stopped
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-staging}
-      RPY_AI_CORE_MJPEG_URL: ${RPY_AI_CORE_MJPEG_URL:-http://ai_core:8081/stream.mjpeg}
+      RPY_AI_CORE_VIDEO_WS_URL: ${RPY_AI_CORE_VIDEO_WS_URL:-ws://ai_core:8081/ws/video}
       REDIS_URL: redis://redis:6379/0
       SNAPSHOT_DIR: /data/snapshots
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rpy:rpy@postgres:5432/rpy}

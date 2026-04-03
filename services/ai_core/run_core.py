@@ -3,7 +3,7 @@ ai_core: single process that ties together video ingest, inference, IPC, and opt
 
 Threads / asyncio:
 - Main thread: GstVisionPipeline GLib loop or dummy loop; blocking `run()` tail.
-- asyncio: MJPEG aiohttp server (dedicated thread running asyncio.run).
+- asyncio: video WebSocket server (JPEG frames, dedicated thread running asyncio.run).
 - Threads: Redis config subscriber, source poll, telemetry publisher, DB writer consumer.
 
 Failure modes:
@@ -35,7 +35,7 @@ from shared.schemas.telemetry import PipelineState, TelemetrySnapshot
 from services.ai_core.config.load import load_app_config
 from services.ai_core.inference.factory import create_inference_backend
 from services.ai_core.ipc.redis_pub import RedisPublisher, save_snapshot_jpeg
-from services.ai_core.mjpeg_server import run_mjpeg_server
+from services.ai_core.video_ws_server import run_video_ws_server
 from services.ai_core.pipeline.state import PipelineController
 from services.ai_core.sensors import read_hailo_temp_c, read_soc_temp_c
 from services.persistence.recording_store import insert_detection_event
@@ -356,7 +356,7 @@ class CoreApp:
         threading.Thread(target=self._writer_loop, daemon=True).start()
 
         async def amain() -> None:
-            await run_mjpeg_server("0.0.0.0", self.cfg.mjpeg_port, self._jpeg_queue)
+            await run_video_ws_server("0.0.0.0", self.cfg.mjpeg_port, self._jpeg_queue)
 
         def run_async() -> None:
             asyncio.run(amain())

@@ -1,5 +1,5 @@
 """
-Aggregated stack diagnostics for operators (Redis, Postgres, ai_core heartbeat, MJPEG upstream).
+Aggregated stack diagnostics for operators (Redis, Postgres, ai_core heartbeat, video WebSocket upstream).
 
 Called from GET /api/v1/diagnostics. Uses sync Redis + sync DB in an async route (acceptable for rare manual runs).
 """
@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 import httpx
 import redis
 from sqlalchemy import text
@@ -33,14 +34,13 @@ AI_HEARTBEAT_KEY = "ai:heartbeat"
 AI_HEARTBEAT_TTL_S = 10
 TELEMETRY_KEY = "telemetry:latest"
 REDIS_BENCH_ROUNDS = 200
-MJPEG_READ_CAP = 65536
-MJPEG_TIMEOUT_S = 6.0
+VIDEO_WS_TIMEOUT_S = 5.0
 
-_DEFAULT_MJPEG_URL = "http://ai_core:8081/stream.mjpeg"
+_DEFAULT_VIDEO_WS_URL = "ws://ai_core:8081/ws/video"
 
 
-def _mjpeg_url() -> str:
-    return os.environ.get("RPY_AI_CORE_MJPEG_URL", _DEFAULT_MJPEG_URL).strip() or _DEFAULT_MJPEG_URL
+def _video_ws_url() -> str:
+    return os.environ.get("RPY_AI_CORE_VIDEO_WS_URL", _DEFAULT_VIDEO_WS_URL).strip() or _DEFAULT_VIDEO_WS_URL
 
 
 def _summarize(checks: list[DiagnosticCheck]) -> DiagnosticsSummary:
@@ -136,72 +136,34 @@ def _telemetry_severity(state: PipelineState) -> tuple[CheckSeverity, bool, str]
     return CheckSeverity.warn, False, str(state.value)
 
 
-async def _check_mjpeg_upstream() -> DiagnosticCheck:
-    url = _mjpeg_url()
+async def _check_ai_core_video_ws() -> DiagnosticCheck:
+    url = _video_ws_url()
     t0 = time.perf_counter()
-    detail: str | None = None
-    data: dict[str, Any] = {"url_host": url.split("://", 1)[-1].split("/", 1)[0]}
-    severity = CheckSeverity.fail
-    ok = False
-    buf = b""
-
+    data: dict[str, Any] = {"url": url[:200]}
     try:
-        timeout = httpx.Timeout(MJPEG_TIMEOUT_S, connect=5.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream("GET", url) as response:
-                data["http_status"] = response.status_code
-                if response.status_code != 200:
-                    detail = f"HTTP {response.status_code}"
-                    return DiagnosticCheck(
-                        id="mjpeg_upstream",
-                        severity=severity,
-                        ok=False,
-                        latency_ms=round((time.perf_counter() - t0) * 1000, 2),
-                        detail=detail,
-                        data=data,
-                    )
-                async for chunk in response.aiter_bytes():
-                    buf += chunk
-                    if (
-                        len(buf) >= MJPEG_READ_CAP
-                        or b"--frame" in buf
-                        or b"\xff\xd8\xff" in buf
-                    ):
-                        break
-    except httpx.TimeoutException:
-        detail = f"timeout po {MJPEG_TIMEOUT_S}s, přečteno {len(buf)} B"
-    except httpx.ConnectError as e:
-        detail = f"connect error: {e}"
-    except OSError as e:
-        detail = str(e)
+        timeout = aiohttp.ClientTimeout(total=VIDEO_WS_TIMEOUT_S, sock_connect=4)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.ws_connect(url) as ws:
+                await ws.close()
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        return DiagnosticCheck(
+            id="ai_core_video_ws",
+            severity=CheckSeverity.ok,
+            ok=True,
+            latency_ms=elapsed_ms,
+            detail="WebSocket /ws/video na ai_core odpověděl",
+            data=data,
+        )
     except Exception as e:
-        detail = f"{type(e).__name__}: {e}"
-
-    elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
-    data["bytes_read"] = len(buf)
-
-    if detail is None:
-        if len(buf) == 0:
-            detail = "0 bajtů těla (fronta prázdná / čekání na snímek)"
-            severity = CheckSeverity.fail
-            ok = False
-        elif b"--frame" in buf or b"\xff\xd8" in buf:
-            detail = "multipart nebo JPEG data v prvním bloku"
-            severity = CheckSeverity.ok
-            ok = True
-        else:
-            detail = "neočekávaný obsah (není boundary ani JPEG)"
-            severity = CheckSeverity.warn
-            ok = False
-
-    return DiagnosticCheck(
-        id="mjpeg_upstream",
-        severity=severity,
-        ok=ok,
-        latency_ms=elapsed_ms,
-        detail=detail,
-        data=data,
-    )
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        return DiagnosticCheck(
+            id="ai_core_video_ws",
+            severity=CheckSeverity.fail,
+            ok=False,
+            latency_ms=elapsed_ms,
+            detail=f"{type(e).__name__}: {e}"[:500],
+            data=data,
+        )
 
 
 def _check_host_load() -> DiagnosticCheck:
@@ -440,7 +402,7 @@ async def collect_diagnostics(
 
     checks.append(_check_host_load())
 
-    checks.append(await _check_mjpeg_upstream())
+    checks.append(await _check_ai_core_video_ws())
 
     total_ms = round((time.perf_counter() - wall0) * 1000, 2)
     summary = _summarize(checks)

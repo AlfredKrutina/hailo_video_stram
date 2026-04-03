@@ -26,31 +26,30 @@
       <p class="hint">Co se ukládá do databáze: typy objektů, volitelné atributy (jen pokud je model dodá), snímky, limity.</p>
       <div id="recordingPanel" class="recording-panel"></div>
       <div class="section-title">Zobrazení</div>
-      <p class="hint">Jeden MJPEG proud z backendu; YouTube přes yt-dlp v image. Lokální ukázka: soubor zabudovaný v image (/opt/rpy/assets). Vlastní soubory: připojte mount v docker-compose.</p>
+      <p class="hint">Video přes WebSocket (JPEG); YouTube přes yt-dlp v image. Lokální ukázka: soubor v image (/opt/rpy/assets). Vlastní soubory: připojte mount v docker-compose.</p>
       <div class="seg" role="group" aria-label="Režim náhledu">
         <button type="button" class="seg-btn active" data-view="main" id="viewMain">Hlavní náhled</button>
         <button type="button" class="seg-btn" data-view="ai" id="viewAi">AI / substream</button>
       </div>
       <div class="section-title">Diagnostika</div>
-      <p class="hint">Redis, Postgres, ai_core, MJPEG (přímo z web kontejneru + stejný origin jako prohlížeč). Otevírej UI přes port 80 (Nginx).</p>
+      <p class="hint">Redis, Postgres, ai_core, WebSocket video (stejný origin přes Nginx). Otevírej UI přes port 80 (Nginx).</p>
       <button type="button" id="btnDiagnostics">Spustit diagnostiku stacku</button>
       <div id="diagPanel" class="diag-panel" hidden role="region" aria-label="Výsledek diagnostiky"></div>
     </aside>
     <main class="main">
       <div class="video-wrap" id="videoWrap">
         <div class="video-toolbar">
-          <span id="streamStatus" class="stream-pill" data-state="unknown" title="Stav MJPEG spojení">Stream …</span>
+          <span id="streamStatus" class="stream-pill" data-state="unknown" title="Stav WS videa">Stream …</span>
           <span id="wsStatus" class="stream-pill stream-ws" title="WebSocket telemetrie">WS …</span>
           <span id="detPill" class="det-pill" hidden title="Počet detekcí v posledním snímku">AI · 0</span>
           <button type="button" class="btn-ghost" id="btnReloadStream">Obnovit obraz</button>
           <button type="button" class="btn-ghost" id="btnFs">Celá obrazovka</button>
         </div>
         <div class="video-stage" id="videoStage">
-          <img id="mjpeg" class="video" alt="Živý náhled kamery" decoding="async" />
+          <canvas id="videoCanvas" class="video" width="640" height="480" aria-label="Živý náhled kamery"></canvas>
           <svg id="overlay" class="overlay" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true"></svg>
           <div class="stream-fallback" id="streamFallback" hidden>
-            <p>Obraz se nepodařilo načíst.</p>
-            <button type="button" id="btnRetryStream">Zkusit znovu</button>
+            <p id="streamFallbackMsg">Čekám na stream…</p>
           </div>
         </div>
         <div class="badge" id="stateBadge">…</div>
@@ -74,6 +73,6 @@
       </div>
     </main>
   </div>
-  <script src="/assets/app.js?v=19" defer></script>
+  <script src="/assets/app.js?v=20" defer></script>
 </body>
 </html>

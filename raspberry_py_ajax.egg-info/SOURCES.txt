@@ -7,7 +7,7 @@ raspberry_py_ajax.egg-info/top_level.txt
 services/__init__.py
 services/ai_core/__init__.py
 services/ai_core/__main__.py
-services/ai_core/mjpeg_server.py
+services/ai_core/video_ws_server.py
 services/ai_core/run_core.py
 services/ai_core/sensors.py
 services/ai_core/config/__init__.py
