@@ -25,6 +25,9 @@ Kamery: často žádný zvuk nebo audio kodek (G.711, PCM), který v Dockeru bez
 Výchozí: playbin jen video + fakesink pro audio/text; u RTSP+uridecodebin omezení uridecodebin na video/x-raw
 (RPY_RTSP_URIDECODEBIN_ALLOW_AUDIO=1 obnoví i audio autoplug).
 
+Inference (ai_core): RPY_INFER_BACKEND=stub|onnx|hailo; ONNX: RPY_ONNX_MODEL_PATH + pip extra [onnx] nebo Dockerfile INSTALL_ONNX=1.
+Telemetrie a diagnostika webu: infer_backend_active, hailo_device_present, ingress_mode — viz docs/RTSP_PI.md.
+
 YouTube: výchozí je řetězec yt-dlp → ffmpeg (MPEG-TS) → fdsrc → decodebin (RPY_YTDLP_FFMPEG_TS=1).
 MPEG-TS má pro GStreamer čitelné sync byty — mizí častá chyba typefind „Stream doesn't contain enough data“
 u surového stdout z yt-dlp (fragmentovaný MP4/WebM). Vypnout remux: RPY_YTDLP_FFMPEG_TS=0.

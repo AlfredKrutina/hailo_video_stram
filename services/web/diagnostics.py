@@ -55,6 +55,64 @@ def _summarize(checks: list[DiagnosticCheck]) -> DiagnosticsSummary:
     return s
 
 
+def _check_ai_stack_from_telemetry(snap: TelemetrySnapshot) -> DiagnosticCheck:
+    """Čte telemetry.extra z ai_core: infer backend, ingress, Hailo zařízení."""
+    t0 = time.perf_counter()
+    ex = snap.extra or {}
+    active = ex.get("infer_backend_active")
+    if active is None:
+        return DiagnosticCheck(
+            id="ai_infer_stack",
+            severity=CheckSeverity.warn,
+            ok=False,
+            latency_ms=round((time.perf_counter() - t0) * 1000, 2),
+            detail="telemetrie bez infer_backend_active — starší ai_core image?",
+            data={"ingress_mode": ex.get("ingress_mode")},
+        )
+    ingress = ex.get("ingress_mode") or ex.get("rtsp_mode")
+    hailo_pres = ex.get("hailo_device_present")
+    note = ex.get("infer_backend_note")
+    gst_err = (ex.get("last_gst_error") or "")[:120]
+    hw = ex.get("gst_hw_decode_hint")
+    data: dict[str, Any] = {
+        "infer_backend_active": active,
+        "ingress_mode": ingress,
+        "hailo_device_present": hailo_pres,
+        "gst_hw_decode_hint": hw or None,
+    }
+    if note:
+        data["infer_backend_note"] = str(note)[:400]
+
+    sev = CheckSeverity.ok
+    ok = True
+    parts: list[str] = []
+    if active == "stub":
+        sev = CheckSeverity.warn
+        ok = False
+        parts.append("aktivní stub inference (žádný ONNX / plný Hailo)")
+    elif active == "hailo":
+        parts.append("Hailo backend")
+        if hailo_pres is False:
+            sev = CheckSeverity.warn
+            ok = False
+            parts.append("/dev/hailo0 v telemetrii absent")
+    elif active == "onnx":
+        parts.append("ONNX CPU")
+    if gst_err:
+        sev = CheckSeverity.warn if sev == CheckSeverity.ok else sev
+        ok = False
+        parts.append(f"gst: {gst_err}")
+    detail = "; ".join(parts) if parts else f"backend={active or '?'}"
+    return DiagnosticCheck(
+        id="ai_infer_stack",
+        severity=sev,
+        ok=ok,
+        latency_ms=round((time.perf_counter() - t0) * 1000, 2),
+        detail=detail[:500],
+        data=data,
+    )
+
+
 def _telemetry_severity(state: PipelineState) -> tuple[CheckSeverity, bool, str]:
     if state == PipelineState.FAILED:
         return CheckSeverity.fail, False, str(state.value)
@@ -272,6 +330,7 @@ async def collect_diagnostics(
                     },
                 ),
             )
+            checks.append(_check_ai_stack_from_telemetry(snap))
         except Exception as e:
             checks.append(
                 DiagnosticCheck(

@@ -314,10 +314,21 @@ function drawBoxes(detections) {
   const svg = $("overlay");
   const pill = $("detPill");
   const list = detections && detections.detections ? detections.detections : [];
+  const frameId =
+    detections && detections.frame_id != null && detections.frame_id !== undefined
+      ? detections.frame_id
+      : null;
   if (pill) {
-    if (list.length) {
+    const parts = [];
+    if (frameId != null) parts.push(`#${frameId}`);
+    if (list.length) parts.push(`${list.length} det`);
+    if (parts.length) {
       pill.hidden = false;
-      pill.textContent = `AI · ${list.length}`;
+      pill.textContent = `AI · ${parts.join(" · ")}`;
+      pill.title =
+        frameId != null
+          ? `Snímek frame_id=${frameId} (MJPEG může mírně zaostávat)`
+          : "Detekce z posledního inference snímku";
     } else {
       pill.hidden = true;
     }

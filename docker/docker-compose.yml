@@ -1,3 +1,6 @@
+# Volitelný limit paměti pro yt-dlp na Pi: docker compose -f docker-compose.yml -f docker-compose.youtube-dev.yml up -d
+# Viz docs/YOUTUBE_PI_LIMITS.md
+
 services:
   redis:
     image: redis:7-alpine
@@ -27,6 +30,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.ai
+      args:
+        INSTALL_ONNX: ${INSTALL_ONNX:-0}
     restart: unless-stopped
     privileged: true
     devices:
@@ -48,6 +53,13 @@ services:
       # RPY_USE_DECODEBIN3: "0" — výchozí decodebin; 1 = zkusit decodebin3
       # yt-dlp | ffmpeg → MPEG-TS (výchozí zapnuto) — lepší typefind než surový stdout z yt-dlp
       # RPY_YTDLP_FFMPEG_TS: "0" — vypnout remux, jen yt-dlp -o -
+      # Inference: stub | onnx | hailo (prázdné = legacy USE_HAILO)
+      # RPY_INFER_BACKEND: "onnx"
+      # RPY_ONNX_MODEL_PATH: "/models/yolov8n.onnx"
+      # RPY_HAILO_HEF_PATH: "/models/model.hef"
+      # Pi HW dekód hint (telemetrie + viz docs/RTSP_PI.md):
+      # RPY_GST_PREFER_V4L2_H264: "1"
+      # GST_PLUGIN_FEATURE_RANK: "v4l2h264dec:MAX"
       USE_HAILO: ${USE_HAILO:-1}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rpy:rpy@postgres:5432/rpy}
     volumes:

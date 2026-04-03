@@ -31,7 +31,7 @@ from shared.schemas.recording import RecordingPolicy, default_policy
 from shared.schemas.telemetry import PipelineState, TelemetrySnapshot
 
 from services.ai_core.config.load import load_app_config
-from services.ai_core.inference.hailo_backend import try_create_hailo_backend
+from services.ai_core.inference.factory import create_inference_backend
 from services.ai_core.ipc.redis_pub import RedisPublisher, save_snapshot_jpeg
 from services.ai_core.mjpeg_server import run_mjpeg_server
 from services.ai_core.pipeline.state import PipelineController
@@ -53,7 +53,7 @@ class CoreApp:
         setup_logging("ai_core")
         self._controller = PipelineController()
         self._redis = RedisPublisher(self.cfg.redis_url)
-        self._backend = try_create_hailo_backend(self.cfg.use_hailo)
+        self._backend, self._infer_probe = create_inference_backend(self.cfg)
         self._last_jpeg: bytes | None = None
         self._pipeline_state: PipelineState = PipelineState.IDLE
         self._last_error: str | None = None
@@ -190,6 +190,14 @@ class CoreApp:
                     extra.update(self._gst.get_diagnostics())
                 except Exception as e:
                     extra["diagnostics_err"] = str(e)
+            probe = getattr(self, "_infer_probe", None)
+            if isinstance(probe, dict):
+                extra["infer_backend_active"] = probe.get("infer_backend_active")
+                extra["hailo_device_present"] = probe.get("hailo_device_present")
+                if probe.get("infer_backend_note"):
+                    extra["infer_backend_note"] = probe.get("infer_backend_note")
+                if probe.get("onnx_model_path"):
+                    extra["onnx_model_path"] = probe.get("onnx_model_path")
             snap = TelemetrySnapshot(
                 pipeline_state=self._pipeline_state,
                 inference_latency_ms=lat,

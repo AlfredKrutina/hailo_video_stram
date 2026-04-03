@@ -4,7 +4,7 @@
 
 | Component | Role |
 |-----------|------|
-| **ai_core** | GStreamer ingest, inference (Hailo when available), publishes detections + telemetry to Redis, MJPEG upstream for Nginx |
+| **ai_core** | GStreamer ingest, inference (stub / ONNX CPU / Hailo podle env), publishes detections + telemetry to Redis, MJPEG upstream for Nginx |
 | **web** | FastAPI: Redis + PostgreSQL, REST (včetně politiky ukládání), WebSocket |
 | **postgres** | Trvalé uložení `detection_events` a `recording_policy` |
 | **redis** | IPC: latest frame metadata, pub/sub, cache politiky pro `ai_core`, volitelný stream náhledu |
@@ -34,7 +34,7 @@ Set `ENVIRONMENT=staging` for verbose structured logging and pipeline diagnostic
 | Oblast UI | Zdroj dat | Poznámka |
 |-----------|-----------|----------|
 | Živý obraz | MJPEG z `ai_core` (`/mjpeg/stream.mjpeg` přes Nginx) | Jeden proud; bounding boxy nejsou v obraze, jen JSON + SVG overlay |
-| Overlay (rámečky) | Redis `detections:latest` → WebSocket `/ws/telemetry` | Souřadnice normalizované 0–1 |
+| Overlay (rámečky) | Redis `detections:latest` → WebSocket `/ws/telemetry` | Souřadnice normalizované 0–1; `frame_id` v JSON pro párování s aktuálním snímkem (best-effort vs MJPEG) |
 | Stav pipeline / telemetrie | `telemetry:latest` | Badge, text, grafy (latence, FPS, teploty, bitrate/loss pokud backend plní) |
 | Hot-swap zdroje | `PATCH /api/v1/source` → Redis `config:source` → `ai_core` | |
 | Práhy modelu | `PATCH /api/v1/model` → `config:model` | Rozšiřitelné v `ModelConfig` |
@@ -56,7 +56,10 @@ Set `ENVIRONMENT=staging` for verbose structured logging and pipeline diagnostic
 
 **Současný kód**
 
-- Inferenční vrstva: **stub** nebo **Hailo** (`services/ai_core/inference/`), podle zařízení a doplnění `hailo_real.py`.
+- Výběr backendu: `create_inference_backend()` v `services/ai_core/inference/factory.py` — env `RPY_INFER_BACKEND` = `stub` \| `onnx` \| `hailo`; legacy režim `USE_HAILO` + `try_create_hailo_backend`.
+- **ONNX CPU**: `RPY_INFER_BACKEND=onnx` + `RPY_ONNX_MODEL_PATH` (YOLOv8 ONNX), závislosti `pip install -e ".[onnx]"` v image.
+- **Hailo**: `/dev/hailo0`, `RPY_HAILO_HEF_PATH`, balík `hailo_platform`; `hailo_real.py` má rozhraní — doplnit `infer()` podle HailoRT u vás.
+- **Stub**: deterministická „person“ pro vývoj bez modelu.
 - Výstup: `Detection` v `shared/schemas/detections.py` = `class_id`, `label`, `confidence`, `box` — jedna detekční hlava (např. YOLO: třídy podle trénovacího datasetu).
 - Konfigurace: `ModelConfig` v `shared/schemas/config.py` — confidence / IOU; lze doplnit `model_id`, cesty k HEF, přepínače úloh.
 

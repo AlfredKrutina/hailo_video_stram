@@ -35,6 +35,7 @@ def load_app_config(config_path: str | None = None) -> AppConfig:
         env_overrides.setdefault("source", {})["uri"] = uri
     if os.environ.get("USE_HAILO", "").lower() in ("0", "false", "no"):
         env_overrides["use_hailo"] = False
+    # RPY_INFER_BACKEND, RPY_ONNX_MODEL_PATH, RPY_HAILO_HEF_PATH — čte inference.factory / hailo_real
     data = _deep_merge(data, env_overrides)
     try:
         return AppConfig.model_validate(data)

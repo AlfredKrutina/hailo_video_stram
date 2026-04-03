@@ -24,6 +24,10 @@ dependencies = [
 ai = [
   "PyGObject>=3.46; platform_system != 'Windows'",
 ]
+onnx = [
+  "onnxruntime>=1.17",
+  "opencv-python-headless>=4.9",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -301,6 +301,7 @@ class GstVisionPipeline:
             "ingress_mode": self._ingress_mode,
             # legacy key for older UIs
             "rtsp_mode": self._ingress_mode,
+            "gst_hw_decode_hint": os.environ.get("RPY_GST_PREFER_V4L2_H264", "").strip(),
             **extra,
         }
 
