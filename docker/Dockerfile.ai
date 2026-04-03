@@ -30,12 +30,23 @@ COPY scripts /app/scripts
 
 RUN pip install --no-cache-dir --break-system-packages -e .
 
+# Resize snímků pro Hailo / ONNX (ONNX dřív instaloval cv2 jen s INSTALL_ONNX=1)
+RUN pip install --no-cache-dir --break-system-packages "opencv-python-headless>=4.9"
+
 # Build: docker build --build-arg INSTALL_ONNX=1 (nebo INSTALL_ONNX=1 v docker-compose) pro CPU ONNX backend
 ARG INSTALL_ONNX=0
 RUN if [ "$INSTALL_ONNX" = "1" ]; then \
       pip install --no-cache-dir --break-system-packages \
-        "onnxruntime>=1.17" "opencv-python-headless>=4.9"; \
+        "onnxruntime>=1.17"; \
     fi
+
+# HailoRT: wheel z Hailo Dev Zone / stejné verze jako driver na Pi — zkopírujte do image nebo:
+#   pip install --no-cache-dir /opt/wheels/hailo_platform-*.whl
+# ARG INSTALL_HAILO=0
+# COPY wheels/ /opt/wheels/
+# RUN if [ "$INSTALL_HAILO" = "1" ] && [ -n "$(ls -A /opt/wheels/*.whl 2>/dev/null)" ]; then \
+#       pip install --no-cache-dir --break-system-packages /opt/wheels/hailo_platform-*.whl; \
+#     fi
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1

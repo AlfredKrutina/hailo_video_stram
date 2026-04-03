@@ -211,6 +211,17 @@ def resolve_playback(configured_uri: str) -> tuple[PlaybackSpec | None, str | No
     if not raw:
         return None, "Prázdná URL zdroje."
 
+    if raw.lower().startswith("v4l2://"):
+        parsed = urlparse(raw)
+        dev = unquote(parsed.path or "/dev/video0")
+        if not dev.startswith("/"):
+            dev = "/dev/" + dev.lstrip("/")
+        logger.info(
+            "playback_v4l2",
+            extra={"extra_data": {"device": dev}},
+        )
+        return PlaybackSpec(kind="v4l2", v4l2_device=dev), None
+
     resolved, err_f = _resolve_file(raw)
     if err_f:
         return None, err_f
@@ -258,4 +269,6 @@ def resolve_playback_uri(configured_uri: str) -> tuple[str | None, str | None]:
         return None, err
     if spec.kind == "direct":
         return spec.uri, None
+    if spec.kind == "v4l2":
+        return spec.v4l2_device, None
     return spec.ytdlp_page_url, None

@@ -194,10 +194,20 @@ class CoreApp:
             if isinstance(probe, dict):
                 extra["infer_backend_active"] = probe.get("infer_backend_active")
                 extra["hailo_device_present"] = probe.get("hailo_device_present")
+                if probe.get("hailo_device_path"):
+                    extra["hailo_device_path"] = probe.get("hailo_device_path")
                 if probe.get("infer_backend_note"):
                     extra["infer_backend_note"] = probe.get("infer_backend_note")
                 if probe.get("onnx_model_path"):
                     extra["onnx_model_path"] = probe.get("onnx_model_path")
+                if "hailo_infer_implemented" in probe:
+                    extra["hailo_infer_implemented"] = probe.get("hailo_infer_implemented")
+            tex = getattr(self._backend, "telemetry_extra", None)
+            if callable(tex):
+                try:
+                    extra.update(tex())
+                except Exception as e:
+                    extra["telemetry_extra_err"] = str(e)[:200]
             snap = TelemetrySnapshot(
                 pipeline_state=self._pipeline_state,
                 inference_latency_ms=lat,

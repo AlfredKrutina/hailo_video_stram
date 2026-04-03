@@ -4,6 +4,7 @@ GStreamer ingest for vision pipeline.
 Ingress modes:
 - **RTSP** — `playbin` video-only + fakesink audio/text (optional `uridecodebin` via env, RTSP pak video-only caps).
 - **Direct URI** — `uridecodebin` (file, http mp4, RTSP when forced).
+- **V4L2** — `v4l2://…` → `v4l2src` → `videoconvert` → stejný RGB bin jako ostatní.
 - **Portal (YouTube, …)** — `yt-dlp -o -` → `fdsrc` → `decodebin` (avoids googlevideo + souphttpsrc 403).
 
 Downstream: fixed RGB → tee → appsink + jpegenc.
@@ -527,6 +528,8 @@ class GstVisionPipeline:
             self._last_playback_uri = spec.uri
         elif spec and spec.kind == "ytdlp_pipe":
             self._last_playback_uri = spec.ytdlp_page_url
+        elif spec and spec.kind == "v4l2":
+            self._last_playback_uri = f"v4l2://{(spec.v4l2_device or '/dev/video0').strip()}"
         else:
             self._last_playback_uri = None
 
@@ -733,6 +736,38 @@ class GstVisionPipeline:
                         "remux": "mpegts_via_ffmpeg" if ffmpeg_bin else "raw_ytdlp_stdout",
                     },
                 },
+            )
+            self._wire_decode_bus_and_play(asink, jsink)
+            return
+
+        if spec.kind == "v4l2":
+            dev = (spec.v4l2_device or "/dev/video0").strip()
+            vsrc = Gst.ElementFactory.make("v4l2src", "v4l2")
+            if vsrc is None:
+                self._on_state(PipelineState.FAILED, "v4l2src missing")
+                return
+            vsrc.set_property("device", dev)
+            qv = Gst.ElementFactory.make("queue", "qv4l")
+            if qv is not None:
+                qv.set_property("max-size-buffers", 4)
+            conv0 = Gst.ElementFactory.make("videoconvert", "v4l_conv")
+            for el in (vsrc, qv, conv0):
+                if el is None:
+                    self._on_state(PipelineState.FAILED, "v4l2 pipeline element missing")
+                    return
+                self._pipeline.add(el)
+            self._pipeline.add(vsink_bin)
+            if not vsrc.link(qv) or not qv.link(conv0):
+                self._on_state(PipelineState.FAILED, "v4l2 link failed")
+                return
+            if not conv0.link(vsink_bin):
+                self._on_state(PipelineState.FAILED, "v4l2 → vsink link failed")
+                return
+            self._ingress_mode = "v4l2src"
+            self._last_playback_uri = f"v4l2://{dev}"
+            logger.info(
+                "ingress_v4l2",
+                extra={"extra_data": {"device": dev}},
             )
             self._wire_decode_bus_and_play(asink, jsink)
             return

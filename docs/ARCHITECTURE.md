@@ -36,7 +36,7 @@ Set `ENVIRONMENT=staging` for verbose structured logging and pipeline diagnostic
 | Živý obraz | MJPEG z `ai_core` (`/mjpeg/stream.mjpeg` přes Nginx) | Jeden proud; bounding boxy nejsou v obraze, jen JSON + SVG overlay |
 | Overlay (rámečky) | Redis `detections:latest` → WebSocket `/ws/telemetry` | Souřadnice normalizované 0–1; `frame_id` v JSON pro párování s aktuálním snímkem (best-effort vs MJPEG) |
 | Stav pipeline / telemetrie | `telemetry:latest` | Badge, text, grafy (latence, FPS, teploty, bitrate/loss pokud backend plní) |
-| Hot-swap zdroje | `PATCH /api/v1/source` → Redis `config:source` → `ai_core` | |
+| Hot-swap zdroje | `PATCH /api/v1/source` → Redis `config:source` → `ai_core` | Včetně `v4l2:///dev/video0` na Pi (mapovat zařízení do kontejneru). |
 | Práhy modelu | `PATCH /api/v1/model` → `config:model` | Rozšiřitelné v `ModelConfig` |
 | Event log | primárně **PostgreSQL** (`GET /api/v1/events`), náhledy `/api/v1/snapshots/{name}` | Redis stream `events:detections` volitelně (`?source=redis`) |
 | Politika ukládání | `GET/PUT /api/v1/recording/policy`, katalog `GET /api/v1/recording/catalog` | Uložená politika se zapisuje do DB a do Redis `config:recording_policy`; `ai_core` ji aplikuje při zápisu událostí |

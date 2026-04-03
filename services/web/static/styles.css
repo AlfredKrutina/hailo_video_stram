@@ -287,11 +287,11 @@ button:hover {
   background: #000;
 }
 
-/* SVG přesně nad „plátnem“ videa po přepočtu letterboxu (nastavuje JS) */
+/* SVG nad videem; nad .stream-fallback aby byly boxy vidět i při chybě MJPEG (WS stále posílá detekce) */
 .overlay {
   position: absolute;
   pointer-events: none;
-  z-index: 2;
+  z-index: 5;
   overflow: visible;
 }
 
@@ -327,13 +327,14 @@ button:hover {
 .stream-fallback {
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 3;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 0.75rem;
-  background: rgba(0, 0, 0, 0.82);
+  /* Nižší než overlay — text zůstane čitelný v horní/spodní části; střed může překrývat boxy méně */
+  background: rgba(0, 0, 0, 0.55);
   color: var(--muted);
   text-align: center;
   padding: 1rem;

@@ -78,6 +78,7 @@ def _check_ai_stack_from_telemetry(snap: TelemetrySnapshot) -> DiagnosticCheck:
         "infer_backend_active": active,
         "ingress_mode": ingress,
         "hailo_device_present": hailo_pres,
+        "hailo_infer_implemented": ex.get("hailo_infer_implemented"),
         "gst_hw_decode_hint": hw or None,
     }
     if note:
@@ -92,10 +93,15 @@ def _check_ai_stack_from_telemetry(snap: TelemetrySnapshot) -> DiagnosticCheck:
         parts.append("aktivní stub inference (žádný ONNX / plný Hailo)")
     elif active == "hailo":
         parts.append("Hailo backend")
+        impl = ex.get("hailo_infer_implemented")
+        if impl is False:
+            sev = CheckSeverity.warn
+            ok = False
+            parts.append("hailo_infer_implemented=false (starší build nebo nekompletní backend)")
         if hailo_pres is False:
             sev = CheckSeverity.warn
             ok = False
-            parts.append("/dev/hailo0 v telemetrii absent")
+            parts.append("Hailo zařízení v telemetrii absent")
     elif active == "onnx":
         parts.append("ONNX CPU")
     if gst_err:

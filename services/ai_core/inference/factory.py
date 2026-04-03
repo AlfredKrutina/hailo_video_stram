@@ -18,8 +18,12 @@ from services.ai_core.inference.hailo_backend import (
 logger = logging.getLogger("ai_core.inference")
 
 
+def _hailo_device_path() -> Path:
+    return Path(os.environ.get("RPY_HAILO_DEVICE", "/dev/hailo0").strip() or "/dev/hailo0")
+
+
 def _hailo_device_present() -> bool:
-    return Path("/dev/hailo0").exists()
+    return _hailo_device_path().exists()
 
 
 def create_inference_backend(cfg: AppConfig) -> tuple[InferenceBackend, dict[str, Any]]:
@@ -34,7 +38,9 @@ def create_inference_backend(cfg: AppConfig) -> tuple[InferenceBackend, dict[str
     probe: dict[str, Any] = {
         "infer_backend_requested": mode or "(default)",
         "hailo_device_present": _hailo_device_present(),
+        "hailo_device_path": str(_hailo_device_path()),
         "rpy_onnx_model_path_set": bool(os.environ.get("RPY_ONNX_MODEL_PATH", "").strip()),
+        "hailo_infer_implemented": False,
     }
 
     if mode == "stub":
@@ -69,6 +75,7 @@ def create_inference_backend(cfg: AppConfig) -> tuple[InferenceBackend, dict[str
 
             b = HailoBackend()
             probe["infer_backend_active"] = "hailo"
+            probe["hailo_infer_implemented"] = getattr(b, "infer_implemented", True)
             return b, probe
         except Exception as e:
             logger.warning("infer_hailo_failed_stub", extra={"extra_data": {"err": str(e)}})
@@ -83,4 +90,5 @@ def create_inference_backend(cfg: AppConfig) -> tuple[InferenceBackend, dict[str
         probe["infer_backend_note"] = "legacy try_create_hailo_backend → stub"
     else:
         probe["infer_backend_active"] = "hailo"
+        probe["hailo_infer_implemented"] = getattr(backend, "infer_implemented", True)
     return backend, probe

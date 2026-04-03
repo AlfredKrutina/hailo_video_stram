@@ -26,7 +26,12 @@ Výchozí: playbin jen video + fakesink pro audio/text; u RTSP+uridecodebin omez
 (RPY_RTSP_URIDECODEBIN_ALLOW_AUDIO=1 obnoví i audio autoplug).
 
 Inference (ai_core): RPY_INFER_BACKEND=stub|onnx|hailo; ONNX: RPY_ONNX_MODEL_PATH + pip extra [onnx] nebo Dockerfile INSTALL_ONNX=1.
-Telemetrie a diagnostika webu: infer_backend_active, hailo_device_present, ingress_mode — viz docs/RTSP_PI.md.
+Hailo: RPY_HAILO_HEF_PATH, volitelně RPY_HAILO_DEVICE, RPY_HAILO_STREAM_INTERFACE; telemetrie navíc hailo_infer_implemented,
+hailo_last_det_count (z runtime), hailo_hef_path — viz docs/RTSP_PI.md.
+
+SVG overlay je nad vrstvou „obraz se nepodařilo načíst“ (stream-fallback), aby šly vidět boxy z WS i při chybě MJPEG.
+
+V4L2: URI v4l2:///dev/video0 — v kontejneru musí existovat mapované zařízení (/dev/video*).
 
 YouTube: výchozí je řetězec yt-dlp → ffmpeg (MPEG-TS) → fdsrc → decodebin (RPY_YTDLP_FFMPEG_TS=1).
 MPEG-TS má pro GStreamer čitelné sync byty — mizí častá chyba typefind „Stream doesn't contain enough data“

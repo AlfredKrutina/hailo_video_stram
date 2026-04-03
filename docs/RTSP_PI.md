@@ -1,5 +1,20 @@
 # RTSP na Raspberry Pi (Docker)
 
+## Doporučené pořadí zdrojů (stabilita)
+
+1. **`file:///opt/rpy/assets/sample.mp4`** — vestavěné demo v image (ověření stacku bez sítě).
+2. **`rtsp://…`** — vlastní kamera na LAN (s TCP, viz níže).
+3. **`v4l2:///dev/video0`** — přímý vstup z lokální USB/Pi kamery přes `v4l2src` (v kontejneru musí být mapované `/dev/video*`: `devices` + `privileged` nebo cgroup rules).
+4. **HTTP(S) přímý MP4** — např. samplelib.
+5. **YouTube** — nejméně spolehlivé na Pi (`yt-dlp` + pipe + `decodebin`); používejte až po ověření bodů 1–3.
+
+## Hailo NPU
+
+- **`RPY_INFER_BACKEND=hailo`**, **`RPY_HAILO_HEF_PATH=/models/….hef`** (svazek `../models:/models:ro`).
+- **`hailo_platform`** musí odpovídat verzi ovladače na hostu — wheel z Hailo Dev Zone, instalace do image (viz komentáře v `docker/Dockerfile.ai`).
+- **`RPY_HAILO_DEVICE`** (výchozí `/dev/hailo0`) a v compose stejný `devices` mapping.
+- Při problémech s `configure` zkuste **`RPY_HAILO_STREAM_INTERFACE=INTEGRATED`** (AI HAT) nebo **`PCIe`**.
+
 ## Výchozí stack
 
 - **GStreamer** `playbin` pouze video, **TCP** pro RTSP (`RPY_RTSP_FORCE_TCP=1`), latence `RPY_RTSP_LATENCY_MS`.

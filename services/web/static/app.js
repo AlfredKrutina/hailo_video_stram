@@ -38,6 +38,10 @@ const presets = [
     uri: "rtsp://user:pass@192.168.1.33:8554/stream",
   },
   {
+    label: "V4L2 (Pi kamera / /dev/video0)",
+    uri: "v4l2:///dev/video0",
+  },
+  {
     label: "YouTube (yt-dlp v kontejneru)",
     uri: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
   },

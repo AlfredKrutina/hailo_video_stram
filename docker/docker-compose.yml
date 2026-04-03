@@ -35,11 +35,12 @@ services:
     restart: unless-stopped
     privileged: true
     devices:
-      - /dev/hailo0:/dev/hailo0
+      - ${RPY_HAILO_DEVICE:-/dev/hailo0}:${RPY_HAILO_DEVICE:-/dev/hailo0}
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-staging}
       REDIS_URL: redis://redis:6379/0
       RPY_CONFIG: /app/config/default.yaml
+      # Na Raspberry Pi použijte nejdřív vestavěné demo MP4, RTSP nebo v4l2:///dev/video0 — YouTube je křehké.
       SOURCE_URI: ${SOURCE_URI:-file:///opt/rpy/assets/sample.mp4}
       # RTSP z Dockeru: TCP často nutné (UDP kamera/LAN). Vypnout: RPY_RTSP_FORCE_TCP=0
       RPY_RTSP_FORCE_TCP: ${RPY_RTSP_FORCE_TCP:-1}
@@ -56,7 +57,10 @@ services:
       # Inference: stub | onnx | hailo (prázdné = legacy USE_HAILO)
       # RPY_INFER_BACKEND: "onnx"
       # RPY_ONNX_MODEL_PATH: "/models/yolov8n.onnx"
+      # Hailo: nainstalujte hailo_platform wheel do image (viz Dockerfile.ai), pak:
+      # RPY_INFER_BACKEND: "hailo"
       # RPY_HAILO_HEF_PATH: "/models/model.hef"
+      # Volitelně: RPY_HAILO_STREAM_INTERFACE=INTEGRATED (RPi AI HAT) nebo PCIe
       # Pi HW dekód hint (telemetrie + viz docs/RTSP_PI.md):
       # RPY_GST_PREFER_V4L2_H264: "1"
       # GST_PLUGIN_FEATURE_RANK: "v4l2h264dec:MAX"
@@ -65,6 +69,7 @@ services:
     volumes:
       - ../config:/app/config:ro
       - snapshots:/data/snapshots
+      # Volitelně HEF modely z hosta: - ../models:/models:ro
       # Volitelně vlastní videa: odkomentujte a vložte např. sample.mp4 do ./samples/
       # - ../samples:/data/samples:ro
     depends_on:
