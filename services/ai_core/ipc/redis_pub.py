@@ -35,6 +35,22 @@ class RedisPublisher:
         payload = frame.model_dump_json()
         self._r.set("detections:latest", payload)
 
+    def publish_source_error_event(self, reason: str, *, configured_uri: str = "") -> None:
+        """Redis + pub/sub pro `source_error` (UI může číst klíč nebo subscribe)."""
+        try:
+            doc = json.dumps(
+                {
+                    "event": "source_error",
+                    "reason": reason[:2000],
+                    "configured_uri": configured_uri[:800],
+                },
+                ensure_ascii=False,
+            )
+            self._r.set("ui:source_event", doc, ex=3600)
+            self._r.publish("rpy:source_events", doc)
+        except redis.RedisError as e:
+            logger.warning("redis_source_event_failed", extra={"extra_data": {"err": str(e)}})
+
     def publish_telemetry(self, snap: TelemetrySnapshot) -> None:
         self._r.set("telemetry:latest", snap.model_dump_json())
 

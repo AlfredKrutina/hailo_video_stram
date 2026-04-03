@@ -27,6 +27,7 @@ import numpy as np
 from shared.logging_setup import setup_logging
 from shared.recording_eval import EventRateLimiter, build_stored_attributes, should_persist_detection
 from shared.schemas.config import AppConfig, ModelConfig
+from shared.schemas.detections import DetectionFrame
 from shared.schemas.recording import RecordingPolicy, default_policy
 from shared.schemas.telemetry import PipelineState, TelemetrySnapshot
 
@@ -127,31 +128,24 @@ class CoreApp:
             except queue.Full:
                 pass
 
-    def _on_frame(
-        self,
-        rgb: np.ndarray,
-        frame_id: int,
-        ts_ns: int,
-        source_uri: str,
-        model: ModelConfig,
-    ) -> None:
-        frame = self._backend.infer(rgb, frame_id, ts_ns, source_uri, model)
-        self._redis.publish_detections(frame)
+    def _publish_detections_from_gst(self, frame: DetectionFrame) -> None:
+        """Hailo GStreamer větev — detekce už v frame, bez CPU infer."""
+        self._apply_detection_side_effects(frame, frame.source_uri)
 
+    def _apply_detection_side_effects(self, frame: DetectionFrame, source_uri: str) -> None:
+        self._redis.publish_detections(frame)
         with self._policy_lock:
             policy = self._recording_policy
-
         snapshot_path: str | None = None
         if policy.store_snapshots and self._last_jpeg:
             for det in frame.detections:
                 if should_persist_detection(det, policy):
                     snapshot_path = save_snapshot_jpeg(
                         self.cfg.snapshot_dir,
-                        frame_id,
+                        frame.frame_id,
                         self._last_jpeg,
                     )
                     break
-
         for det in frame.detections:
             if not should_persist_detection(det, policy):
                 continue
@@ -162,7 +156,7 @@ class CoreApp:
             try:
                 self._event_queue.put_nowait(
                     {
-                        "frame_id": frame_id,
+                        "frame_id": frame.frame_id,
                         "source_uri": source_uri,
                         "label": det.label,
                         "class_id": det.class_id,
@@ -173,6 +167,19 @@ class CoreApp:
                 )
             except queue.Full:
                 logger.warning("event_queue_full_drop")
+
+    def _on_frame(
+        self,
+        rgb: np.ndarray,
+        frame_id: int,
+        ts_ns: int,
+        source_uri: str,
+        model: ModelConfig,
+    ) -> None:
+        if isinstance(self._infer_probe, dict) and self._infer_probe.get("infer_backend_active") == "hailo_gst":
+            return
+        frame = self._backend.infer(rgb, frame_id, ts_ns, source_uri, model)
+        self._apply_detection_side_effects(frame, source_uri)
 
     def _telemetry_loop(self) -> None:
         while not self._stop.is_set():
@@ -187,7 +194,11 @@ class CoreApp:
                     extra["telemetry_metrics_err"] = str(e)
             if self._gst and hasattr(self._gst, "get_diagnostics"):
                 try:
-                    extra.update(self._gst.get_diagnostics())
+                    diag = self._gst.get_diagnostics()
+                    extra.update(diag)
+                    sid = diag.get("source_idle_message")
+                    if sid:
+                        extra["source_error"] = sid
                 except Exception as e:
                     extra["diagnostics_err"] = str(e)
             probe = getattr(self, "_infer_probe", None)
@@ -202,6 +213,8 @@ class CoreApp:
                     extra["onnx_model_path"] = probe.get("onnx_model_path")
                 if "hailo_infer_implemented" in probe:
                     extra["hailo_infer_implemented"] = probe.get("hailo_infer_implemented")
+                if probe.get("hailo_gst_stack") is not None:
+                    extra["hailo_gst_stack"] = probe.get("hailo_gst_stack")
             tex = getattr(self._backend, "telemetry_extra", None)
             if callable(tex):
                 try:
@@ -273,12 +286,19 @@ class CoreApp:
         )
 
         if _GST_AVAILABLE and gst_init():
+            hailo_gst = (
+                isinstance(self._infer_probe, dict)
+                and self._infer_probe.get("infer_backend_active") == "hailo_gst"
+            )
             self._gst = GstVisionPipeline(
                 self.cfg,
                 self._controller,
                 self._on_frame,
                 self._on_jpeg,
                 self._on_state,
+                redis_publisher=self._redis,
+                hailo_gst_mode=hailo_gst,
+                publish_detections_gst=self._publish_detections_from_gst,
             )
             ok = self._gst.start()
             if not ok:

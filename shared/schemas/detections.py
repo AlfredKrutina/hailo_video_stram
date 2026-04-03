@@ -33,6 +33,8 @@ class DetectionFrame(BaseModel):
     height: int
     source_uri: str
     detections: list[Detection]
+    """Volitelný paralelní formát pro Hailo / UI: `{class, confidence, bbox, attrs}`."""
+    objects: list[dict[str, Any]] | None = None
 
     def model_dump_json_round(self) -> str:
         return self.model_dump_json()

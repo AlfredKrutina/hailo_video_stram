@@ -30,6 +30,18 @@ from shared.schemas.config import AppConfig, ModelConfig
 from shared.schemas.telemetry import PipelineState
 
 from services.ai_core.source_resolve import resolve_playback, sanitize_uri
+
+try:
+    from services.ai_core.pipeline.hailo_gst_integration import try_make_hailo_pre_bin
+except Exception:  # pragma: no cover
+    try_make_hailo_pre_bin = None  # type: ignore[misc, assignment]
+
+try:
+    from services.ai_core.inference.hailo_filter_callbacks import set_hailo_filter_context
+except Exception:  # pragma: no cover
+
+    def set_hailo_filter_context(**_kw: Any) -> None:
+        pass
 from services.ai_core.pipeline.rtsp_probe import rtsp_describe_ok
 from services.ai_core.pipeline.state import PipelineController
 
@@ -256,12 +268,22 @@ class GstVisionPipeline:
         on_frame: Callable[..., Any],
         on_jpeg: Callable[[bytes], None],
         on_state: Callable[[PipelineState, str | None], None],
+        *,
+        redis_publisher: Any | None = None,
+        hailo_gst_mode: bool = False,
+        publish_detections_gst: Callable[..., Any] | None = None,
     ) -> None:
         self._cfg = app_config
         self._controller = controller
         self._on_frame = on_frame
         self._on_jpeg = on_jpeg
         self._on_state = on_state
+        self._redis_publisher = redis_publisher
+        self._hailo_gst_mode = bool(hailo_gst_mode)
+        self._publish_detections_gst = publish_detections_gst
+        self._force_idle_message: str | None = None
+        self._ytdlp_error_streak = 0
+        self._hailo_probe_ok = False
         self._pipeline: Any = None
         self._main_loop: Any = None
         self._thread: threading.Thread | None = None
@@ -297,9 +319,11 @@ class GstVisionPipeline:
             "configured_uri": sanitize_uri(self._cfg.source.uri),
             "playback_uri": sanitize_uri(self._last_playback_uri or self._cfg.source.uri),
             "resolution_error": self._last_resolution_error,
+            "source_idle_message": getattr(self, "_source_idle_message", None),
             "last_gst_error": self._last_gst_error,
             "recovery_cycles": self._recovery_cycles,
             "ingress_mode": self._ingress_mode,
+            "hailo_gst_probe_ok": self._hailo_probe_ok,
             # legacy key for older UIs
             "rtsp_mode": self._ingress_mode,
             "gst_hw_decode_hint": os.environ.get("RPY_GST_PREFER_V4L2_H264", "").strip(),
@@ -522,14 +546,19 @@ class GstVisionPipeline:
         assert Gst is not None
         self._kill_ytdlp_child()
 
-        spec, rerr = resolve_playback(self._cfg.source.uri)
+        spec, rerr = resolve_playback(self._cfg.source.uri, idle_message=self._force_idle_message)
+        self._force_idle_message = None
         self._last_resolution_error = rerr
+        self._source_idle_message = None
         if spec and spec.kind == "direct":
             self._last_playback_uri = spec.uri
         elif spec and spec.kind == "ytdlp_pipe":
             self._last_playback_uri = spec.ytdlp_page_url
         elif spec and spec.kind == "v4l2":
             self._last_playback_uri = f"v4l2://{(spec.v4l2_device or '/dev/video0').strip()}"
+        elif spec and spec.kind == "idle":
+            self._last_playback_uri = "idle://"
+            self._source_idle_message = spec.idle_message
         else:
             self._last_playback_uri = None
 
@@ -550,6 +579,49 @@ class GstVisionPipeline:
         except RuntimeError as e:
             self._on_state(PipelineState.FAILED, str(e))
             return
+
+        if spec.kind == "idle":
+            msg = spec.idle_message or ""
+            if self._redis_publisher is not None and msg:
+                try:
+                    self._redis_publisher.publish_source_error_event(
+                        msg,
+                        configured_uri=sanitize_uri(self._cfg.source.uri),
+                    )
+                except Exception as e:
+                    logger.debug("redis_source_event_failed", extra={"extra_data": {"err": str(e)}})
+            tsrc = Gst.ElementFactory.make("videotestsrc", "idle_src")
+            q0 = Gst.ElementFactory.make("queue", "idle_q")
+            conv = Gst.ElementFactory.make("videoconvert", "idle_conv")
+            if tsrc is None or q0 is None or conv is None:
+                self._on_state(PipelineState.FAILED, "videotestsrc/queue missing")
+                return
+            try:
+                tsrc.set_property("pattern", "smpte")
+                tsrc.set_property("is-live", True)
+            except Exception:
+                pass
+            for el in (tsrc, q0, conv):
+                self._pipeline.add(el)
+            self._pipeline.add(vsink_bin)
+            if not tsrc.link(q0) or not q0.link(conv):
+                self._on_state(PipelineState.FAILED, "idle link failed")
+                return
+            if not conv.link(vsink_bin):
+                self._on_state(PipelineState.FAILED, "idle → vsink link failed")
+                return
+            self._ingress_mode = "idle_videotestsrc"
+            self._wire_decode_bus_and_play(asink, jsink)
+            return
+
+        if self._hailo_gst_mode and self._publish_detections_gst is not None:
+            set_hailo_filter_context(
+                publish=self._publish_detections_gst,
+                source_uri=self._cfg.source.uri,
+                model=self._cfg.model,
+                width=self._width,
+                height=self._height,
+            )
 
         if spec.kind == "ytdlp_pipe":
             page = (spec.ytdlp_page_url or "").strip()
@@ -833,16 +905,42 @@ class GstVisionPipeline:
             decode.set_property("uri", resolved)
             decode.connect("source-setup", on_source_setup)
             self._pipeline.add(decode)
-            self._pipeline.add(vsink_bin)
-            self._ingress_mode = (
-                "uridecodebin_forced"
-                if resolved.lower().startswith("rtsp://")
-                else "uridecodebin"
-            )
-
-            bin_sink = vsink_bin.get_static_pad("sink")
-            _linked: dict[str, bool] = {"done": False}
-            self._connect_decodebin_video(decode, bin_sink, _linked)
+            hef_stage = os.environ.get("RPY_HAILO_HEF_STAGE1", "").strip()
+            hailo_bin: Any | None = None
+            if self._hailo_gst_mode and hef_stage and try_make_hailo_pre_bin is not None:
+                try:
+                    hailo_bin = try_make_hailo_pre_bin(
+                        width=self._width,
+                        height=self._height,
+                        hef_stage1=hef_stage,
+                    )
+                except Exception as e:
+                    logger.warning("hailo_bin_build_exc", extra={"extra_data": {"err": str(e)}})
+            if hailo_bin is not None:
+                self._pipeline.add(hailo_bin)
+                self._pipeline.add(vsink_bin)
+                h_sink = hailo_bin.get_static_pad("sink")
+                _linked_h: dict[str, bool] = {"done": False}
+                self._connect_decodebin_video(decode, h_sink, _linked_h)
+                if not hailo_bin.link(vsink_bin):
+                    self._on_state(PipelineState.FAILED, "hailo_bin → vsink link failed")
+                    return
+                self._hailo_probe_ok = True
+                self._ingress_mode = (
+                    "uridecodebin_hailo"
+                    if resolved.lower().startswith("rtsp://")
+                    else "uridecodebin_hailo"
+                )
+            else:
+                self._pipeline.add(vsink_bin)
+                self._ingress_mode = (
+                    "uridecodebin_forced"
+                    if resolved.lower().startswith("rtsp://")
+                    else "uridecodebin"
+                )
+                bin_sink = vsink_bin.get_static_pad("sink")
+                _linked: dict[str, bool] = {"done": False}
+                self._connect_decodebin_video(decode, bin_sink, _linked)
 
         self._wire_decode_bus_and_play(asink, jsink)
 
@@ -963,6 +1061,24 @@ class GstVisionPipeline:
             if self._pipeline:
                 self._pipeline.set_state(Gst.State.NULL)
             self._kill_ytdlp_child()
+            if _ingress_is_ytdlp_pipe(self._ingress_mode):
+                self._ytdlp_error_streak += 1
+                thr = int(os.environ.get("RPY_YTDLP_FAIL_BEFORE_IDLE", "3") or "3")
+                if self._ytdlp_error_streak >= max(1, thr):
+                    self._ytdlp_error_streak = 0
+                    self._force_idle_message = detail[:1200]
+                    orig_uri = self._cfg.source.uri
+                    self._cfg.source.uri = "rpy-internal:idle"
+                    if self._redis_publisher is not None:
+                        try:
+                            self._redis_publisher.publish_source_error_event(
+                                detail[:1200],
+                                configured_uri=sanitize_uri(orig_uri),
+                            )
+                        except Exception as e:
+                            logger.debug("redis_ytdlp_idle_event", extra={"extra_data": {"err": str(e)}})
+                    self._rebuild()
+                    return
             self._start_recovery(str(err))
         elif t == Gst.MessageType.EOS:
             # region agent log
@@ -1019,6 +1135,8 @@ class GstVisionPipeline:
             self._fps_frames = 0
             self._last_fps_t = now
         self._forbidden_streak = 0
+        if self._hailo_gst_mode:
+            return Gst.FlowReturn.OK
         t0 = time.perf_counter()
         self._on_frame(frame, self._frame_id, time.time_ns(), self._cfg.source.uri, self._cfg.model)
         dt = (time.perf_counter() - t0) * 1000

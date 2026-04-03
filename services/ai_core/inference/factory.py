@@ -1,4 +1,4 @@
-"""Výběr inference backendu: stub, Hailo, ONNX CPU (env + config)."""
+"""Výběr inference backendu: Hailo GStreamer, ONNX CPU, stub."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from services.ai_core.inference.hailo_backend import (
     StubHailoBackend,
     try_create_hailo_backend,
 )
+from services.ai_core.inference.hailo_gst_probe import hailonet_element_available
 
 logger = logging.getLogger("ai_core.inference")
 
@@ -26,13 +27,15 @@ def _hailo_device_present() -> bool:
     return _hailo_device_path().exists()
 
 
+def _use_hailo_gst_stack() -> bool:
+    return _hailo_device_present() and bool(os.environ.get("RPY_HAILO_HEF_STAGE1", "").strip())
+
+
 def create_inference_backend(cfg: AppConfig) -> tuple[InferenceBackend, dict[str, Any]]:
     """
-    Vrací (backend, statický_probe) pro telemetrii.
-
-    Env:
-    - RPY_INFER_BACKEND: stub | hailo | onnx — výběr výslovný; prázdné = legacy chování přes use_hailo.
-    - RPY_ONNX_MODEL_PATH: cesta k .onnx (YOLOv8 export [1,84,N]).
+    - `/dev/hailo0` + `RPY_HAILO_HEF_STAGE1` + plugin `hailonet` → NullInferenceBackend (infer v GStreamer).
+    - Jinak ONNX pokud `RPY_INFER_BACKEND=onnx` nebo explicitní cesta.
+    - Legacy USE_HAILO bez GST → původní try_create_hailo_backend (stub).
     """
     mode = os.environ.get("RPY_INFER_BACKEND", "").strip().lower()
     probe: dict[str, Any] = {
@@ -41,6 +44,7 @@ def create_inference_backend(cfg: AppConfig) -> tuple[InferenceBackend, dict[str
         "hailo_device_path": str(_hailo_device_path()),
         "rpy_onnx_model_path_set": bool(os.environ.get("RPY_ONNX_MODEL_PATH", "").strip()),
         "hailo_infer_implemented": False,
+        "hailo_gst_stack": False,
     }
 
     if mode == "stub":
@@ -61,6 +65,7 @@ def create_inference_backend(cfg: AppConfig) -> tuple[InferenceBackend, dict[str
             b = OnnxCpuBackend(path)
             probe["infer_backend_active"] = "onnx"
             probe["onnx_model_path"] = path
+            probe["hailo_infer_implemented"] = True
             logger.info("infer_backend_onnx", extra={"extra_data": {"path": path}})
             return b, probe
         except Exception as e:
@@ -69,26 +74,29 @@ def create_inference_backend(cfg: AppConfig) -> tuple[InferenceBackend, dict[str
             probe["infer_backend_note"] = f"onnx init failed: {e}"
             return StubHailoBackend(), probe
 
+    if _use_hailo_gst_stack():
+        from services.ai_core.inference.null_backend import NullInferenceBackend  # noqa: PLC0415
+
+        probe_ok = hailonet_element_available()
+        probe["hailo_gst_stack"] = True
+        probe["infer_backend_active"] = "hailo_gst"
+        probe["hailo_infer_implemented"] = bool(probe_ok)
+        probe["rpy_hailo_hef_stage1_set"] = True
+        if not probe_ok:
+            probe["infer_backend_note"] = "hailonet plugin not found — install TAPPAS GStreamer plugins; using empty detections until fixed"
+        logger.info(
+            "infer_backend_hailo_gst",
+            extra={"extra_data": {"hailonet_probe": probe_ok}},
+        )
+        return NullInferenceBackend(), probe
+
     if mode == "hailo":
-        try:
-            from services.ai_core.inference.hailo_real import HailoBackend  # noqa: PLC0415
+        logger.warning(
+            "infer_backend_hailo_legacy_ignored",
+            extra={"extra_data": {"msg": "RPY_INFER_BACKEND=hailo deprecated — use RPY_HAILO_HEF_STAGE1 + hailonet"}},
+        )
 
-            b = HailoBackend()
-            probe["infer_backend_active"] = "hailo"
-            probe["hailo_infer_implemented"] = getattr(b, "infer_implemented", True)
-            return b, probe
-        except Exception as e:
-            logger.warning("infer_hailo_failed_stub", extra={"extra_data": {"err": str(e)}})
-            probe["infer_backend_active"] = "stub"
-            probe["infer_backend_note"] = str(e)[:300]
-            return StubHailoBackend(), probe
-
-    # Legacy: USE_HAILO / cfg.use_hailo
-    backend = try_create_hailo_backend(cfg.use_hailo)
-    if isinstance(backend, StubHailoBackend):
-        probe["infer_backend_active"] = "stub"
-        probe["infer_backend_note"] = "legacy try_create_hailo_backend → stub"
-    else:
-        probe["infer_backend_active"] = "hailo"
-        probe["hailo_infer_implemented"] = getattr(backend, "infer_implemented", True)
+    backend = try_create_hailo_backend(False)
+    probe["infer_backend_active"] = "stub"
+    probe["infer_backend_note"] = "use ONNX (RPY_INFER_BACKEND=onnx) or Hailo GStreamer (device + RPY_HAILO_HEF_STAGE1)"
     return backend, probe

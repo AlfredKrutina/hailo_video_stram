@@ -102,6 +102,13 @@ def _check_ai_stack_from_telemetry(snap: TelemetrySnapshot) -> DiagnosticCheck:
             sev = CheckSeverity.warn
             ok = False
             parts.append("Hailo zařízení v telemetrii absent")
+    elif active == "hailo_gst":
+        parts.append("Hailo GStreamer (hailonet)")
+        impl = ex.get("hailo_infer_implemented")
+        if impl is False:
+            sev = CheckSeverity.warn
+            ok = False
+            parts.append("hailonet plugin / probe nedostupný")
     elif active == "onnx":
         parts.append("ONNX CPU")
     if gst_err:

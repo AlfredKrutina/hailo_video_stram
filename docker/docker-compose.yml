@@ -57,10 +57,13 @@ services:
       # Inference: stub | onnx | hailo (prázdné = legacy USE_HAILO)
       # RPY_INFER_BACKEND: "onnx"
       # RPY_ONNX_MODEL_PATH: "/models/yolov8n.onnx"
-      # Hailo: nainstalujte hailo_platform wheel do image (viz Dockerfile.ai), pak:
-      # RPY_INFER_BACKEND: "hailo"
-      # RPY_HAILO_HEF_PATH: "/models/model.hef"
-      # Volitelně: RPY_HAILO_STREAM_INTERFACE=INTEGRATED (RPi AI HAT) nebo PCIe
+      # Hailo GStreamer (TAPPAS): hailonet + volitelně RPY_HAILO_GST_BIN_DESCRIPTION (Gst.parse_bin_from_description)
+      # RPY_HAILO_HEF_STAGE1: "/models/yolov8m_h10.hef"
+      # RPY_HAILO_HEF_LPR: "/models/lprnet.hef"
+      # RPY_HAILO_HEF_VCOLOR: "/models/vehicle_color.hef"
+      # RPY_HAILO_HEF_VATTR: "/models/vehicle_attr.hef"
+      # RPY_HAILO_HEF_PATTR: "/models/pedestrian_attr.hef"
+      # RPY_HAILO_GST_BIN_DESCRIPTION: 'queue ! videoconvert ! ...'
       # Pi HW dekód hint (telemetrie + viz docs/RTSP_PI.md):
       # RPY_GST_PREFER_V4L2_H264: "1"
       # GST_PLUGIN_FEATURE_RANK: "v4l2h264dec:MAX"

@@ -130,51 +130,55 @@ def sanitize_uri(uri: str) -> str:
 
 def _resolve_youtube(url: str) -> tuple[str | None, str | None]:
     """Resolve a page URL to a direct media URL using yt-dlp (YouTube, Vimeo, Twitch, …)."""
-    ytdlp = shutil.which("yt-dlp")
-    if not ytdlp:
-        return None, (
-            "yt-dlp: binary missing in container. "
-            "Install yt-dlp in Dockerfile.ai or use a direct HTTP/RTSP/file URL."
-        )
-    # Single progressive URL for GStreamer: avoid strict ext=mp4 (often unavailable on YouTube).
-    cmd = [
-        ytdlp,
-        "-f",
-        "best[height<=720]/best[height<=1080]/best/worst",
-        "--get-url",
-        "--no-warnings",
-        "--no-playlist",
-        url,
-    ]
     try:
-        r = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return None, "yt-dlp: timeout (120s) — check network from container."
-    except OSError as e:
-        return None, f"yt-dlp: failed to run: {e}"
-
-    out = (r.stdout or "").strip()
-    err = (r.stderr or "").strip()
-    if r.returncode != 0:
-        tail = (err or out)[:800]
-        return None, f"yt-dlp failed (exit {r.returncode}): {tail}"
-
-    for line in reversed(out.splitlines()):
-        line = line.strip()
-        if line.startswith("http://") or line.startswith("https://"):
-            logger.info(
-                "ytdlp_resolved",
-                extra={"extra_data": {"page": sanitize_uri(url)}},
+        ytdlp = shutil.which("yt-dlp")
+        if not ytdlp:
+            return None, (
+                "yt-dlp: binary missing in container. "
+                "Install yt-dlp in Dockerfile.ai or use a direct HTTP/RTSP/file URL."
             )
-            return line, None
+        # Single progressive URL for GStreamer: avoid strict ext=mp4 (often unavailable on YouTube).
+        cmd = [
+            ytdlp,
+            "-f",
+            "best[height<=720]/best[height<=1080]/best/worst",
+            "--get-url",
+            "--no-warnings",
+            "--no-playlist",
+            url,
+        ]
+        try:
+            r = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return None, "yt-dlp: timeout (120s) — check network from container."
+        except OSError as e:
+            return None, f"yt-dlp: failed to run: {e}"
 
-    return None, "yt-dlp did not return a direct HTTP(S) URL."
+        out = (r.stdout or "").strip()
+        err = (r.stderr or "").strip()
+        if r.returncode != 0:
+            tail = (err or out)[:800]
+            return None, f"yt-dlp failed (exit {r.returncode}): {tail}"
+
+        for line in reversed(out.splitlines()):
+            line = line.strip()
+            if line.startswith("http://") or line.startswith("https://"):
+                logger.info(
+                    "ytdlp_resolved",
+                    extra={"extra_data": {"page": sanitize_uri(url)}},
+                )
+                return line, None
+
+        return None, "yt-dlp did not return a direct HTTP(S) URL."
+    except Exception as e:
+        logger.exception("resolve_youtube_unexpected")
+        return None, f"yt-dlp resolve výjimka: {e}"
 
 
 def _try_ytdlp_generic(url: str) -> tuple[str | None, str | None]:
@@ -184,7 +188,11 @@ def _try_ytdlp_generic(url: str) -> tuple[str | None, str | None]:
     """
     if _looks_like_direct_http_media(url):
         return None, None
-    return _resolve_youtube(url)
+    try:
+        return _resolve_youtube(url)
+    except Exception as e:
+        logger.exception("try_ytdlp_generic")
+        return None, str(e)
 
 
 def _resolve_file(uri: str) -> tuple[str | None, str | None]:
@@ -203,13 +211,24 @@ def _resolve_file(uri: str) -> tuple[str | None, str | None]:
     return uri, None
 
 
-def resolve_playback(configured_uri: str) -> tuple[PlaybackSpec | None, str | None]:
+def resolve_playback(
+    configured_uri: str,
+    *,
+    idle_message: str | None = None,
+) -> tuple[PlaybackSpec | None, str | None]:
     """
     Returns (PlaybackSpec, None) on success, or (None, error_message).
+    Interní URI `rpy-internal:idle` přepne pipeline na idle (videotestsrc) — po pádu YouTube atd.
     """
     raw = normalize_media_url((configured_uri or "").strip())
     if not raw:
         return None, "Prázdná URL zdroje."
+
+    if raw.strip() in ("rpy-internal:idle", "idle://"):
+        return PlaybackSpec(
+            kind="idle",
+            idle_message=idle_message or "Zdroj nedostupný — přepnuto na idle náhled.",
+        ), None
 
     if raw.lower().startswith("v4l2://"):
         parsed = urlparse(raw)
@@ -235,11 +254,19 @@ def resolve_playback(configured_uri: str) -> tuple[PlaybackSpec | None, str | No
         return PlaybackSpec(kind="ytdlp_pipe", ytdlp_page_url=u), None
 
     if u.lower().startswith(("http://", "https://")) and not _looks_like_direct_http_media(u):
-        direct, yerr = _try_ytdlp_generic(u)
+        try:
+            direct, yerr = _try_ytdlp_generic(u)
+        except Exception as e:
+            logger.exception("ytdlp_generic_resolve_exception")
+            return PlaybackSpec(
+                kind="idle",
+                idle_message=f"yt-dlp resolve výjimka: {e}"[:800],
+            ), None
         if direct:
             return PlaybackSpec(kind="direct", uri=direct), None
         if yerr and "unsupported url" not in yerr.lower():
-            return None, yerr
+            # Místo tvrdé chyby — idle generátor + důvod v telemetrii / Redis
+            return PlaybackSpec(kind="idle", idle_message=yerr[:1200]), None
         logger.debug(
             "source_http_passthrough_after_ytdlp_skip",
             extra={"extra_data": {"uri": sanitize_uri(u)}},
@@ -271,4 +298,6 @@ def resolve_playback_uri(configured_uri: str) -> tuple[str | None, str | None]:
         return spec.uri, None
     if spec.kind == "v4l2":
         return spec.v4l2_device, None
+    if spec.kind == "idle":
+        return "idle://", None
     return spec.ytdlp_page_url, None

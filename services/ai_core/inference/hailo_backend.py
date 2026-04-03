@@ -84,10 +84,5 @@ def try_create_hailo_backend(use_hailo: bool) -> InferenceBackend:
     if not use_hailo:
         logger.info("hailo_disabled_using_stub")
         return StubHailoBackend()
-    try:
-        from services.ai_core.inference.hailo_real import HailoBackend  # noqa: PLC0415
-
-        return HailoBackend()
-    except Exception as e:
-        logger.warning("hailo_unavailable_stub", extra={"extra_data": {"err": str(e)}})
-        return StubHailoBackend()
+    logger.info("legacy_use_hailo_stub_infer_in_gstreamer")
+    return StubHailoBackend()
