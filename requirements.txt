@@ -1,7 +1,13 @@
-# Pip (Raspberry Pi / Linux). Also install system packages:
+# Raspberry Pi / Debian: do NOT pip install into system Python (PEP 668).
+# Use a venv and keep access to apt packages (gi, hailo):
+#   python3 -m venv .venv --system-site-packages
+#   source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# System (apt), see also context/RASPBERRY_PI_RUN.txt:
 #   sudo apt install python3-gi python3-gi-cairo gstreamer1.0-tools \
 #        gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
-# Hailo: follow Hailo RPi5 / Hailo-10H install (hailonet, hailofilter, hailo Python module).
+# Hailo: hailonet, hailofilter, hailo Python — per Hailo RPi5 / Hailo-10H docs.
 
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0

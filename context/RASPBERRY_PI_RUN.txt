@@ -1,0 +1,41 @@
+# Spuštění na Raspberry Pi (bez Dockeru)
+
+## 1) Proč `pip install` hlásí „externally-managed-environment“
+
+Raspberry Pi OS chrání systémový Python (PEP 668). Balíčky z PyPI instaluj do **virtuálního prostředí**, ne přes `pip` přímo do systému.
+
+## 2) Venv s balíčky z apt (důležité pro GStreamer + gi + hailo)
+
+`main.py` potřebuje `gi` (PyGObject) a modul `hailo` z instalace Hailo — ty jsou typicky z **apt**, ne z pip.
+Vytvoř venv s přístupem ke systémovým balíčkům:
+
+  cd ~/hailo_video_stram
+  python3 -m venv .venv --system-site-packages
+  source .venv/bin/activate
+  pip install -r requirements.txt
+
+Bez `--system-site-packages` často selže `import gi` nebo `import hailo` i po `pip install`.
+
+## 3) Systémové balíčky (pokud je ještě nemáš)
+
+  sudo apt update
+  sudo apt install -y python3-gi python3-gi-cairo gstreamer1.0-tools \
+    gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+
+Hailo pluginy a `python3-hailo` / TAPPAS podle oficiálního návodu pro tvůj HAT.
+
+## 4) Proměnné a běh
+
+  export SOURCE_URI='file:///cesta/k/videu.mp4'
+  export HAILO_HEF_PATH=/cesta/k/model.hef
+  export HAILO_FILTER_SO=/cesta/k/postprocess.so
+  export DEBUG=1
+
+  python main.py
+
+Prohlížeč: http://<IP_pi>:8080/
+
+## 5) Starý Docker stack
+
+Po přechodu na tento jednoduchý projekt už v repu není `docker/docker-compose.yml`.
+Aplikace = jeden proces `python main.py`, žádné `docker compose`.
