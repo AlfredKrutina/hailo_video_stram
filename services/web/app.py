@@ -21,7 +21,7 @@ from typing import Any, Callable, TypeVar
 import redis
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
@@ -456,6 +456,12 @@ async def ws_telemetry(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         logger.debug("ws_telemetry_disconnect")
         return
+
+
+@app.get("/video_feed")
+async def video_feed() -> RedirectResponse:
+    """Alias na MJPEG (přes Nginx stejný origin → ai_core); drží živý multipart stream."""
+    return RedirectResponse(url="/mjpeg/stream.mjpeg", status_code=307)
 
 
 @app.get("/")

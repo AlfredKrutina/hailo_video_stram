@@ -6,24 +6,6 @@
 
 const MJPEG_PATH = "/mjpeg/stream.mjpeg";
 
-/** Cursor debug NDJSON ingest (same machine as browser). */
-function _agentLog(hypothesisId, location, message, data) {
-  // #region agent log
-  fetch("http://127.0.0.1:7397/ingest/00b546de-f70b-4b16-bc22-8deef4895d64", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9397a8" },
-    body: JSON.stringify({
-      sessionId: "9397a8",
-      hypothesisId,
-      location,
-      message,
-      data: data || {},
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-}
-
 const presets = [
   {
     label: "Demo · soubor v image (doporučeno)",
@@ -147,7 +129,6 @@ function renderDiagnosticsTable(report, clientCheck) {
 }
 
 async function measureMjpegBrowserTtfb(timeoutMs = 5000) {
-  _agentLog("H2", "app.js:measureMjpegBrowserTtfb", "ttfb_start", { timeoutMs });
   const ac = new AbortController();
   const t0 = performance.now();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
@@ -155,10 +136,6 @@ async function measureMjpegBrowserTtfb(timeoutMs = 5000) {
     const r = await fetch(mjpegUrl(), { signal: ac.signal, cache: "no-store" });
     if (!r.ok) {
       clearTimeout(timer);
-      _agentLog("H2", "app.js:measureMjpegBrowserTtfb", "ttfb_http_fail", {
-        status: r.status,
-        ms: Math.round(performance.now() - t0),
-      });
       return {
         id: "mjpeg_browser_ttfb",
         severity: "fail",
@@ -204,7 +181,6 @@ async function measureMjpegBrowserTtfb(timeoutMs = 5000) {
       };
     }
     const ok = bytes > 0;
-    _agentLog("H2", "app.js:measureMjpegBrowserTtfb", "ttfb_ok_chunk", { ms, bytes, ok, done: first.done });
     return {
       id: "mjpeg_browser_ttfb",
       severity: ok ? "ok" : "warn",
@@ -217,11 +193,6 @@ async function measureMjpegBrowserTtfb(timeoutMs = 5000) {
     clearTimeout(timer);
     const name = e?.name || "";
     const ms = Math.round(performance.now() - t0);
-    _agentLog("H2", "app.js:measureMjpegBrowserTtfb", "ttfb_catch", {
-      name,
-      ms,
-      detail: name === "AbortError" ? `timeout ${timeoutMs} ms` : String(e),
-    });
     return {
       id: "mjpeg_browser_ttfb",
       severity: "fail",
@@ -560,13 +531,6 @@ function setWsPill(ok, text) {
 function showStreamError(show) {
   const fb = $("streamFallback");
   if (fb) fb.hidden = !show;
-  if (show) {
-    _agentLog("H3", "app.js:showStreamError", "fallback_visible", {
-      imgComplete: $("mjpeg")?.complete,
-      imgNw: $("mjpeg")?.naturalWidth,
-      imgNh: $("mjpeg")?.naturalHeight,
-    });
-  }
 }
 
 function attachMjpegHandlers(img) {
@@ -577,18 +541,8 @@ function attachMjpegHandlers(img) {
     setStreamPill("live", "MJPEG · živě");
     showStreamError(false);
     layoutOverlay();
-    _agentLog("H3", "app.js:mjpeg:load", "img_load", {
-      nw: img.naturalWidth,
-      nh: img.naturalHeight,
-      srcLen: (img.src || "").length,
-    });
   });
   img.addEventListener("error", () => {
-    _agentLog("H3", "app.js:mjpeg:error", "img_error_event", {
-      nw: img.naturalWidth,
-      nh: img.naturalHeight,
-      wsState: lastWsPipelineState,
-    });
     if (String(lastWsPipelineState).toUpperCase() === "RUNNING") {
       setStreamPill("stale", "MJPEG · bez dat");
       streamState.lastLoadAt = Date.now();
@@ -624,10 +578,6 @@ function startStreamStaleWatch() {
       setStreamPill("stale", "MJPEG · bez dat");
       if (!streamState._staleLogged) {
         streamState._staleLogged = true;
-        _agentLog("H3", "app.js:staleWatch", "stream_stale_no_new_frames", {
-          ageMs: age,
-          lastLoadAt: streamState.lastLoadAt,
-        });
       }
     }
   }, 2000);
@@ -785,9 +735,15 @@ function initWs() {
         `<span class="metric-item metric-item--err">chyba: ${escapeHtml(String(tel.last_error).slice(0, 160))}</span>`,
       );
       const errStr = String(tel.last_error).slice(0, 280);
+      const isRtsp404 = errStr.includes("RTSP stream vrátil 404");
       if (errStr !== lastPipelineErrorBanner) {
         lastPipelineErrorBanner = errStr;
-        setAppAlert("warn", `Pipeline: ${errStr}`, 12000);
+        if (isRtsp404) {
+          setAppAlert("error", errStr, 0);
+          showStreamError(false);
+        } else {
+          setAppAlert("warn", `Pipeline: ${errStr}`, 12000);
+        }
       }
     } else {
       lastPipelineErrorBanner = "";

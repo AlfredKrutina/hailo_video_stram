@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
-from shared.agent_debug_ndjson import agent_debug_log
 from shared.errors import ErrorCode, log_error, log_warning_code
 
 if TYPE_CHECKING:
@@ -59,46 +58,45 @@ def create_mjpeg_app(q: queue.Queue[bytes | None]) -> web.Application:
         empty_s = 0
         # Kratší než dříve 5 s — při záseku pipeline držet multipart živý.
         placeholder_after_s = 2
-        first_placeholder_logged = False
 
         try:
             while True:
-                chunk = await loop.run_in_executor(None, _get_chunk)
-                if chunk is None:
-                    empty_s += 1
-                    if empty_s >= placeholder_after_s:
-                        empty_s = 0
-                        # region agent log
-                        if not first_placeholder_logged:
-                            first_placeholder_logged = True
-                            agent_debug_log(
-                                "H1",
-                                "mjpeg_server.py:stream",
-                                "mjpeg_placeholder_no_pipeline_frames",
-                                {"empty_s_before_send": placeholder_after_s},
-                            )
-                        # endregion
+                try:
+                    chunk = await loop.run_in_executor(None, _get_chunk)
+                    if chunk is None:
+                        empty_s += 1
+                        if empty_s >= placeholder_after_s:
+                            empty_s = 0
+                            await resp.write(boundary + _PLACEHOLDER_JPEG + b"\r\n")
+                        continue
+                    empty_s = 0
+                    await resp.write(boundary + chunk + b"\r\n")
+                except asyncio.CancelledError:
+                    raise
+                except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                    log_warning_code(
+                        logger,
+                        ErrorCode.MJPEG_STREAM_ERROR,
+                        "mjpeg client disconnected",
+                        err=str(e),
+                    )
+                    break
+                except Exception as e:
+                    log_warning_code(
+                        logger,
+                        ErrorCode.MJPEG_STREAM_ERROR,
+                        "mjpeg stream chunk error; sending placeholder",
+                        err=str(e),
+                    )
+                    try:
                         await resp.write(boundary + _PLACEHOLDER_JPEG + b"\r\n")
+                    except (ConnectionResetError, BrokenPipeError, OSError):
+                        break
+                    except Exception:
+                        break
                     continue
-                empty_s = 0
-                await resp.write(boundary + chunk + b"\r\n")
         except asyncio.CancelledError:
             raise
-        except (ConnectionResetError, BrokenPipeError, OSError) as e:
-            # Client closed connection; expected under load or tab close
-            log_warning_code(
-                logger,
-                ErrorCode.MJPEG_STREAM_ERROR,
-                "mjpeg client disconnected",
-                err=str(e),
-            )
-        except Exception as e:
-            log_error(
-                logger,
-                ErrorCode.MJPEG_STREAM_ERROR,
-                "mjpeg stream aborted",
-                exc=e,
-            )
         return resp
 
     app.router.add_get("/stream.mjpeg", stream)

@@ -311,6 +311,8 @@ class GstVisionPipeline:
         self._ffmpeg_stderr_thread: threading.Thread | None = None
         self._ffmpeg_stderr_tail: deque[str] = deque(maxlen=120)
         self._forbidden_streak: int = 0
+        # Zobrazovaná chyba (např. RTSP 404), kterou držíme přes recovery místo přepsání na None.
+        self._sticky_ui_error: str | None = None
 
     def get_diagnostics(self) -> dict[str, Any]:
         extra: dict[str, Any] = {}
@@ -482,6 +484,18 @@ class GstVisionPipeline:
         return "403" in t or "forbidden" in t
 
     @staticmethod
+    def _is_gst_rtsp_not_found(detail: str, source_uri: str) -> bool:
+        """gst-resource-error-quark: Not found (3) u RTSP — obvykle špatná URL / stream neexistuje."""
+        if not (source_uri or "").strip().lower().startswith("rtsp://"):
+            return False
+        d = detail.lower()
+        if "gst-resource-error-quark" in d and "not found" in d:
+            return True
+        if "not found" in d and "(3)" in detail:
+            return True
+        return False
+
+    @staticmethod
     def _is_hailo_resource_error(text: str) -> bool:
         u = text.upper()
         if "OUT_OF_PHYSICAL" in u or "HAILO_OUT_OF_PHYSICAL_DEVICES" in u:
@@ -517,6 +531,9 @@ class GstVisionPipeline:
                 f"gst_null_incomplete ret={ret} state={state} pending={pending}",
             )
         return ok
+
+    def _recovery_on_state_recovering(self) -> None:
+        self._on_state(PipelineState.RECOVERING, self._sticky_ui_error)
 
     def _connect_decodebin_video(
         self,
@@ -567,6 +584,7 @@ class GstVisionPipeline:
         self._main_loop = GLib.MainLoop()
         self._thread = threading.Thread(target=self._main_loop.run, daemon=True)
         self._controller.force(PipelineState.RUNNING)
+        self._sticky_ui_error = None
         self._on_state(PipelineState.RUNNING, None)
         ret = self._pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
@@ -1036,6 +1054,7 @@ class GstVisionPipeline:
                 pass
             return False
         self._last_gst_error = None
+        self._sticky_ui_error = None
         self._controller.transition(PipelineState.RUNNING)
         self._on_state(PipelineState.RUNNING, None)
         logger.info("eos_seek_loop_ok", extra={"extra_data": {"uri": sanitize_uri(uri)}})
@@ -1080,6 +1099,25 @@ class GstVisionPipeline:
                     extra={"extra_data": {"tail": list(self._ffmpeg_stderr_tail)[-20:]}},
                 )
             detail = f"{err}" + (f" | {dbg}" if dbg else "")
+            if self._is_gst_rtsp_not_found(detail, self._cfg.source.uri):
+                msg = "RTSP stream vrátil 404 — zkontroluj URL a dostupnost kamery"
+                self._sticky_ui_error = msg
+                if self._redis_publisher is not None:
+                    try:
+                        self._redis_publisher.publish_source_error_event(
+                            msg,
+                            configured_uri=sanitize_uri(self._cfg.source.uri),
+                        )
+                    except Exception as e:
+                        logger.debug("redis_rtsp404_event", extra={"extra_data": {"err": str(e)}})
+                self._controller.transition(PipelineState.PAUSED)
+                self._on_state(PipelineState.RECOVERING, msg)
+                if self._pipeline:
+                    self._sync_pipeline_to_null()
+                self._kill_ytdlp_child()
+                self._start_recovery(str(err))
+                return
+
             if (
                 self._hailo_gst_mode
                 and self._on_hailo_resource_error is not None
@@ -1248,7 +1286,7 @@ class GstVisionPipeline:
                 return
             if not self._recover_stop.is_set():
                 self._controller.transition(PipelineState.RUNNING)
-                self._on_state(PipelineState.RECOVERING, None)
+                self._recovery_on_state_recovering()
                 if self._recover_sleep(0.05):
                     logger.info("recovery_stopped")
                     return
@@ -1262,7 +1300,7 @@ class GstVisionPipeline:
                 return
             if not self._recover_stop.is_set():
                 self._controller.transition(PipelineState.RUNNING)
-                self._on_state(PipelineState.RECOVERING, None)
+                self._recovery_on_state_recovering()
                 if self._recover_sleep(0.05):
                     logger.info("recovery_stopped")
                     return
@@ -1293,7 +1331,7 @@ class GstVisionPipeline:
                 logger.info("recovery_stopped")
                 return
             self._controller.transition(PipelineState.RUNNING)
-            self._on_state(PipelineState.RECOVERING, None)
+            self._recovery_on_state_recovering()
             if self._recover_sleep(0.2):
                 logger.info("recovery_stopped")
                 return
