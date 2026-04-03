@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import queue
 import signal
 import threading
@@ -61,6 +62,8 @@ class CoreApp:
         self._gst: Any = None
         self._jpeg_queue: queue.Queue[bytes | None] = queue.Queue(maxsize=4)
         self._stop = threading.Event()
+        self._hailo_oopd_attempts = 0
+        self._hailo_recovery_lock = threading.Lock()
 
         self._policy_lock = threading.Lock()
         self._recording_policy: RecordingPolicy = default_policy()
@@ -128,9 +131,90 @@ class CoreApp:
             except queue.Full:
                 pass
 
+    @staticmethod
+    def _is_hailo_rt_like_exception(exc: BaseException) -> bool:
+        if "HailoRT" in type(exc).__name__:
+            return True
+        s = str(exc).upper()
+        return "OUT_OF_PHYSICAL" in s or "HAILO_OUT_OF_PHYSICAL" in s or "HAILO_OUT_OF_PHYSICAL_DEVICES" in s
+
     def _publish_detections_from_gst(self, frame: DetectionFrame) -> None:
         """Hailo GStreamer větev — detekce už v frame, bez CPU infer."""
-        self._apply_detection_side_effects(frame, frame.source_uri)
+        try:
+            self._apply_detection_side_effects(frame, frame.source_uri)
+        except BaseException as e:
+            probe = self._infer_probe if isinstance(self._infer_probe, dict) else {}
+            if probe.get("infer_backend_active") == "hailo_gst" and self._is_hailo_rt_like_exception(e):
+                logger.error("hailo_rt_exc_in_gst_publish", extra={"extra_data": {"err": str(e)}})
+                msg = str(e)[:1200]
+                threading.Thread(
+                    target=lambda m=msg: self._handle_hailo_resource_error(m),
+                    daemon=True,
+                    name="hailo-oopd-from-publish",
+                ).start()
+                return
+            raise
+
+    def _handle_hailo_resource_error(self, detail: str) -> None:
+        """Po Hailo OOPD: stop → release → 2 s → start; max 3 pokusy, pak ONNX + source_error."""
+        with self._hailo_recovery_lock:
+            self._hailo_oopd_attempts += 1
+            attempt = self._hailo_oopd_attempts
+            if os.environ.get("ENVIRONMENT", "").lower() == "staging":
+                logger.info(
+                    "hailo_oopd_recovery",
+                    extra={"extra_data": {"attempt": attempt, "detail": detail[:400]}},
+                )
+            if attempt > 3:
+                self._fallback_to_onnx_after_hailo_oopd(detail)
+                return
+            if self._gst:
+                self._gst.stop()
+            from services.ai_core.pipeline.hailo_device_release import release_hailo_device
+
+            release_hailo_device(self._redis, detail)
+            time.sleep(2.0)
+            if self._gst:
+                self._gst.start()
+
+    def _fallback_to_onnx_after_hailo_oopd(self, reason: str) -> None:
+        onnx_path = os.environ.get("RPY_ONNX_MODEL_PATH", "").strip()
+        if not onnx_path:
+            self._redis.publish_source_error_event(
+                "Hailo nedostupné po opakovaných pokusech; ONNX fallback nelze — nastavte RPY_ONNX_MODEL_PATH.",
+                configured_uri=self.cfg.source.uri,
+            )
+            return
+        os.environ["RPY_INFER_BACKEND"] = "onnx"
+        self._backend, self._infer_probe = create_inference_backend(self.cfg)
+        if self._gst:
+            self._gst.stop()
+        from services.ai_core.pipeline.gst_pipeline import (  # noqa: PLC0415
+            GstVisionPipeline,
+            _GST_AVAILABLE,
+            gst_init,
+        )
+
+        if not (_GST_AVAILABLE and gst_init()):
+            logger.warning("gst_unavailable_after_onnx_fallback")
+            return
+        self._gst = GstVisionPipeline(
+            self.cfg,
+            self._controller,
+            self._on_frame,
+            self._on_jpeg,
+            self._on_state,
+            redis_publisher=self._redis,
+            hailo_gst_mode=False,
+            publish_detections_gst=self._publish_detections_from_gst,
+            on_hailo_resource_error=None,
+        )
+        self._gst.start()
+        self._hailo_oopd_attempts = 0
+        self._redis.publish_source_error_event(
+            f"Hailo OOPD — přepnuto na ONNX: {reason[:800]}",
+            configured_uri=self.cfg.source.uri,
+        )
 
     def _apply_detection_side_effects(self, frame: DetectionFrame, source_uri: str) -> None:
         self._redis.publish_detections(frame)
@@ -246,6 +330,7 @@ class CoreApp:
             self._gst.apply_model_config(m)
 
     def _apply_source(self, uri: str) -> None:
+        self._hailo_oopd_attempts = 0
         self.cfg.source.uri = uri
         if self._gst:
             self._gst.apply_source_uri(uri)
@@ -299,6 +384,7 @@ class CoreApp:
                 redis_publisher=self._redis,
                 hailo_gst_mode=hailo_gst,
                 publish_detections_gst=self._publish_detections_from_gst,
+                on_hailo_resource_error=self._handle_hailo_resource_error if hailo_gst else None,
             )
             ok = self._gst.start()
             if not ok:

@@ -42,6 +42,7 @@ except Exception:  # pragma: no cover
 
     def set_hailo_filter_context(**_kw: Any) -> None:
         pass
+from services.ai_core.pipeline.hailo_device_release import release_hailo_device
 from services.ai_core.pipeline.rtsp_probe import rtsp_describe_ok
 from services.ai_core.pipeline.state import PipelineController
 
@@ -272,6 +273,7 @@ class GstVisionPipeline:
         redis_publisher: Any | None = None,
         hailo_gst_mode: bool = False,
         publish_detections_gst: Callable[..., Any] | None = None,
+        on_hailo_resource_error: Callable[[str], None] | None = None,
     ) -> None:
         self._cfg = app_config
         self._controller = controller
@@ -281,6 +283,7 @@ class GstVisionPipeline:
         self._redis_publisher = redis_publisher
         self._hailo_gst_mode = bool(hailo_gst_mode)
         self._publish_detections_gst = publish_detections_gst
+        self._on_hailo_resource_error = on_hailo_resource_error
         self._force_idle_message: str | None = None
         self._ytdlp_error_streak = 0
         self._hailo_probe_ok = False
@@ -477,6 +480,43 @@ class GstVisionPipeline:
     def _is_forbidden_http_error(text: str) -> bool:
         t = text.lower()
         return "403" in t or "forbidden" in t
+
+    @staticmethod
+    def _is_hailo_resource_error(text: str) -> bool:
+        u = text.upper()
+        if "OUT_OF_PHYSICAL" in u or "HAILO_OUT_OF_PHYSICAL_DEVICES" in u:
+            return True
+        if "HAILO_OUT_OF_PHYSICAL" in u:
+            return True
+        if "VDEVICE" in u and "FOUND: 0" in u:
+            return True
+        if "FAILED TO CREATE VDEVICE" in u or "CREATE VDEVICE" in u:
+            return True
+        return False
+
+    def _sync_pipeline_to_null(self) -> bool:
+        """Čeká na Gst.State.NULL (až ~3 s); při selhání zkusí uvolnit Hailo zařízení."""
+        if not self._pipeline or not _GST_AVAILABLE or Gst is None:
+            return True
+        self._pipeline.set_state(Gst.State.NULL)
+        ret, state, pending = self._pipeline.get_state(3 * Gst.SECOND)
+        ok = ret == Gst.StateChangeReturn.SUCCESS and state == Gst.State.NULL
+        if not ok:
+            logger.warning(
+                "gst_pipeline_null_incomplete",
+                extra={
+                    "extra_data": {
+                        "ret": str(ret),
+                        "state": str(state),
+                        "pending": str(pending),
+                    },
+                },
+            )
+            release_hailo_device(
+                self._redis_publisher,
+                f"gst_null_incomplete ret={ret} state={state} pending={pending}",
+            )
+        return ok
 
     def _connect_decodebin_video(
         self,
@@ -1039,8 +1079,26 @@ class GstVisionPipeline:
                     "gst_error_ffmpeg_stderr_tail",
                     extra={"extra_data": {"tail": list(self._ffmpeg_stderr_tail)[-20:]}},
                 )
-            self._controller.transition(PipelineState.PAUSED)
             detail = f"{err}" + (f" | {dbg}" if dbg else "")
+            if (
+                self._hailo_gst_mode
+                and self._on_hailo_resource_error is not None
+                and self._is_hailo_resource_error(detail)
+            ):
+                logger.error("gst_hailo_resource_error", extra={"extra_data": {"detail": detail[:800]}})
+                self._controller.transition(PipelineState.RECOVERING)
+                self._on_state(PipelineState.RECOVERING, detail[:1200])
+                cb = self._on_hailo_resource_error
+                msg = detail[:1200]
+                threading.Thread(
+                    target=lambda m=msg, fn=cb: fn(m),
+                    daemon=True,
+                    name="hailo-oopd-recovery",
+                ).start()
+                self._kill_ytdlp_child()
+                return
+
+            self._controller.transition(PipelineState.PAUSED)
             if self._is_forbidden_http_error(detail):
                 self._forbidden_streak += 1
             else:
@@ -1053,13 +1111,13 @@ class GstVisionPipeline:
                 )
                 self._on_state(PipelineState.FAILED, fail_msg[:1200])
                 if self._pipeline:
-                    self._pipeline.set_state(Gst.State.NULL)
+                    self._sync_pipeline_to_null()
                 self._kill_ytdlp_child()
                 return
 
             self._on_state(PipelineState.RECOVERING, detail[:1200])
             if self._pipeline:
-                self._pipeline.set_state(Gst.State.NULL)
+                self._sync_pipeline_to_null()
             self._kill_ytdlp_child()
             if _ingress_is_ytdlp_pipe(self._ingress_mode):
                 self._ytdlp_error_streak += 1
@@ -1099,7 +1157,7 @@ class GstVisionPipeline:
             self._controller.transition(PipelineState.PAUSED)
             self._on_state(PipelineState.RECOVERING, self._last_gst_error)
             if self._pipeline:
-                self._pipeline.set_state(Gst.State.NULL)
+                self._sync_pipeline_to_null()
             self._kill_ytdlp_child()
             self._start_recovery("EOS")
         elif t == Gst.MessageType.WARNING:
@@ -1249,6 +1307,10 @@ class GstVisionPipeline:
             return
         if self._main_loop:
             self._main_loop.quit()
+        thr = self._thread
+        if thr is not None and thr.is_alive():
+            thr.join(timeout=4.0)
+        self._sync_pipeline_to_null()
         self._thread = None
         self._main_loop = None
         self._pipeline = None
@@ -1264,8 +1326,13 @@ class GstVisionPipeline:
             self._recover_stop.clear()
         if self._main_loop:
             self._main_loop.quit()
-        if self._pipeline and _GST_AVAILABLE:
-            self._pipeline.set_state(Gst.State.NULL)
+        thr = self._thread
+        if thr is not None and thr.is_alive():
+            thr.join(timeout=4.0)
+        self._sync_pipeline_to_null()
+        self._thread = None
+        self._main_loop = None
+        self._pipeline = None
 
     def get_fps(self) -> float:
         return self._fps_value

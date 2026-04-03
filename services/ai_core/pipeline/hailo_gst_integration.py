@@ -1,9 +1,7 @@
 """
 Volitelný podgraf před RGB vsink — z env `RPY_HAILO_GST_BIN_DESCRIPTION` (Gst.parse_bin_from_description).
 
-Příklad (z TAPPAS / vlastní pipeline): queue ! videoconvert ! ... ! hailonet hef-path=... ! hailofilter ...
-
-Tensorové větve závisí na konkrétní verzi pluginů — neprovádíme odhad NV12 řetězců z Pythonu.
+Výchozí řetězec převádí video na RGB před `hailonet` (YUV z decode → RGB), doplní `hef-path` a volitelně `so-path` z env.
 """
 
 from __future__ import annotations
@@ -25,6 +23,23 @@ try:
 except Exception:
     pass
 
+# Dosazuje se v Pythonu: {RPY_HAILO_HEF_STAGE1}, {RPY_HAILO_FILTER_SO}
+_DEFAULT_HAILO_GST_BIN_DESCRIPTION = (
+    "videoconvert ! video/x-raw,format=RGB ! "
+    "hailonet hef-path={RPY_HAILO_HEF_STAGE1} ! "
+    "hailofilter so-path={RPY_HAILO_FILTER_SO} ! hailooverlay ! videoconvert"
+)
+
+
+def _substitute_hailo_bin_description(desc: str, hef_stage1: str) -> str:
+    out = desc.replace("{RPY_HAILO_HEF_STAGE1}", hef_stage1)
+    filt = (
+        os.environ.get("RPY_HAILO_FILTER_SO", "").strip()
+        or os.environ.get("RPY_HAILO_FILTER_SO_PATH", "").strip()
+    )
+    out = out.replace("{RPY_HAILO_FILTER_SO}", filt)
+    return out
+
 
 def try_make_hailo_pre_bin(
     *,
@@ -32,18 +47,41 @@ def try_make_hailo_pre_bin(
     height: int,
     hef_stage1: str,
 ) -> Any | None:
-    del width, height, hef_stage1
+    del width, height
     if _GST is None:
         return None
     Gst = _GST
-    desc = os.environ.get("RPY_HAILO_GST_BIN_DESCRIPTION", "").strip()
+    raw = os.environ.get("RPY_HAILO_GST_BIN_DESCRIPTION", "").strip()
+    using_default = not raw
+    desc = raw or _DEFAULT_HAILO_GST_BIN_DESCRIPTION
+    desc = _substitute_hailo_bin_description(desc, hef_stage1)
+    if using_default:
+        filt = (
+            os.environ.get("RPY_HAILO_FILTER_SO", "").strip()
+            or os.environ.get("RPY_HAILO_FILTER_SO_PATH", "").strip()
+        )
+        if not filt:
+            logger.error(
+                "hailo_default_gst_bin_requires_filter_so",
+                extra={
+                    "extra_data": {
+                        "hint": "Set RPY_HAILO_FILTER_SO (postprocess .so) or override RPY_HAILO_GST_BIN_DESCRIPTION.",
+                    },
+                },
+            )
+            return None
+    if "{RPY_HAILO_FILTER_SO}" in desc or "{RPY_HAILO_HEF_STAGE1}" in desc:
+        logger.error(
+            "hailo_gst_bin_unsubstituted_placeholder",
+            extra={"extra_data": {"hint": "Set RPY_HAILO_FILTER_SO or full RPY_HAILO_GST_BIN_DESCRIPTION"}},
+        )
+        return None
     if not desc:
         logger.info(
             "hailo_gst_bin_description_missing",
             extra={
                 "extra_data": {
-                    "hint": "Set RPY_HAILO_GST_BIN_DESCRIPTION to a Gst.parse_bin_from_description fragment "
-                    "(e.g. TAPPAS hailonet ! hailofilter ! …) or rely on CPU ONNX path.",
+                    "hint": "Set RPY_HAILO_GST_BIN_DESCRIPTION or RPY_HAILO_HEF_STAGE1 + RPY_HAILO_FILTER_SO.",
                 },
             },
         )

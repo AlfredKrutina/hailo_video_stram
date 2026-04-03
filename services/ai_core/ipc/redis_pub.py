@@ -51,6 +51,29 @@ class RedisPublisher:
         except redis.RedisError as e:
             logger.warning("redis_source_event_failed", extra={"extra_data": {"err": str(e)}})
 
+    def publish_hailo_device_reset_event(
+        self,
+        detail: str = "",
+        *,
+        hailortcli_ok: bool = False,
+        pci_reset_ok: bool = False,
+    ) -> None:
+        """Událost uvolnění / resetu Hailo (`hailo_device_reset`)."""
+        try:
+            doc = json.dumps(
+                {
+                    "event": "hailo_device_reset",
+                    "detail": detail[:2000],
+                    "hailortcli_ok": hailortcli_ok,
+                    "pci_reset_ok": pci_reset_ok,
+                },
+                ensure_ascii=False,
+            )
+            self._r.set("ui:hailo_event", doc, ex=3600)
+            self._r.publish("rpy:source_events", doc)
+        except redis.RedisError as e:
+            logger.warning("redis_hailo_reset_event_failed", extra={"extra_data": {"err": str(e)}})
+
     def publish_telemetry(self, snap: TelemetrySnapshot) -> None:
         self._r.set("telemetry:latest", snap.model_dump_json())
 

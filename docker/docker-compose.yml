@@ -63,11 +63,15 @@ services:
       # RPY_HAILO_HEF_VCOLOR: "/models/vehicle_color.hef"
       # RPY_HAILO_HEF_VATTR: "/models/vehicle_attr.hef"
       # RPY_HAILO_HEF_PATTR: "/models/pedestrian_attr.hef"
+      # Volitelný sysfs reset PCI Hailo (např. /sys/bus/pci/devices/0000:01:00.0/reset)
+      # RPY_HAILO_PCI_RESET_PATH: "/sys/bus/pci/devices/0000:01:00.0/reset"
       # RPY_HAILO_GST_BIN_DESCRIPTION: 'queue ! videoconvert ! ...'
       # Pi HW dekód hint (telemetrie + viz docs/RTSP_PI.md):
       # RPY_GST_PREFER_V4L2_H264: "1"
       # GST_PLUGIN_FEATURE_RANK: "v4l2h264dec:MAX"
       USE_HAILO: ${USE_HAILO:-1}
+      # Volitelný sysfs reset PCI (viz komentář výše u RPY_HAILO_PCI_RESET_PATH)
+      RPY_HAILO_PCI_RESET_PATH: ${RPY_HAILO_PCI_RESET_PATH:-}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rpy:rpy@postgres:5432/rpy}
     volumes:
       - ../config:/app/config:ro
